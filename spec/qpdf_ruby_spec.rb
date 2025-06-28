@@ -52,4 +52,39 @@ RSpec.describe QpdfRuby do
 
     expect(actual_xml.to_s).to eq(expected_xml.to_s)
   end
+
+  it "sets a password on a PDF" do
+    doc = QpdfRuby::Document.new(fixture_file("example_accessibility.pdf"))
+
+    # only needed to get the expected structure
+    doc.mark_paths_as_artifacts
+    doc.ensure_bbox
+
+    doc.encrypt(
+      user_pw: "userpass",
+      owner_pw: "ownerpass",
+      encryption_revision: QpdfRuby::ENCRYPTION_REVISION_AES_256U,
+      allow_print: QpdfRuby::PRINT_LOW,
+      allow_modify: true,
+      allow_extract: false,
+      accessibility: true,
+      assemble: false,
+      annotate_and_form: false,
+      form_filling: false,
+      encrypt_metadata: true,
+      use_aes: true
+    )
+
+    doc.write tmp_file
+
+    passsword = %w[userpass ownerpass].sample
+
+    protected_doc = QpdfRuby::Document.new(tmp_file, passsword)
+    actual_structure = protected_doc.show_structure
+
+    actual_xml = Nokogiri::XML(actual_structure, &:noblanks)
+    expected_xml = Nokogiri::XML(expected_structure, &:noblanks)
+
+    expect(actual_xml.to_s).to eq(expected_xml.to_s)
+  end
 end

@@ -1,8 +1,11 @@
 #pragma once
 
+#define POINTERHOLDER_TRANSITION 1
+
 #include <memory>
 #include <string>
 #include <qpdf/QPDF.hh>
+#include <qpdf/QPDFWriter.hh>
 
 namespace qpdf_ruby {
 
@@ -16,7 +19,7 @@ namespace qpdf_ruby {
 class DocumentHandle final {
  public:
   // ---- factory ----------------------------------------------------------
-  static std::unique_ptr<DocumentHandle> open(const std::string& filename);
+  static std::unique_ptr<DocumentHandle> open(const std::string& filename, std::string const& pwd);
   static std::unique_ptr<DocumentHandle> open_memory(std::string const& description, std::vector<unsigned char> data,
                                                      std::string const& password = "");
 
@@ -25,6 +28,12 @@ class DocumentHandle final {
   void write(const std::string& out_filename);
 
   std::string write_to_memory();
+
+  void set_encryption(const std::string& user_pw, const std::string& owner_pw, int R, qpdf_r3_print_e allow_print,
+                      bool allow_modify, bool allow_extract, bool accessibility = true, bool assemble = true,
+                      bool annotate_and_form = true, bool form_filling = true, bool encrypt_metadata = true,
+                      bool use_aes = true);
+  void setup_encryption(QPDFWriter& w) const;
 
   /** Direct access for C++ helpers that need the raw QPDF. */
   QPDF& qpdf() { return *m_qpdf; }
@@ -42,11 +51,26 @@ class DocumentHandle final {
 
   std::shared_ptr<QPDF> m_qpdf;
   std::vector<unsigned char> m_owned_buf;
+
+  // --- New encryption settings ---
+  bool m_encryption_requested = false;
+  std::string m_user_pw;
+  std::string m_owner_pw;
+  int m_encrypt_R = 4;
+  qpdf_r3_print_e m_encrypt_allow_print{qpdf_r3p_full};
+  bool m_encrypt_allow_modify = true;
+  bool m_encrypt_allow_extract = true;
+  bool m_encrypt_accessibility = true;
+  bool m_encrypt_assemble = true;
+  bool m_encrypt_annotate_and_form = true;
+  bool m_encrypt_form_filling = true;
+  bool m_encrypt_encrypt_metadata = true;
+  bool m_encrypt_use_aes = true;
 };
 
 extern "C" {
 /** Returns a freshly allocated handle or nullptr on error (see errno). */
-DocumentHandle* qpdf_ruby_open(const char* filename);
+DocumentHandle* qpdf_ruby_open(const char* filename, char const* pwd);
 
 DocumentHandle* qpdf_ruby_open_memory(char const* desc, unsigned char const* buf, size_t len, char const* pwd);
 
@@ -56,5 +80,11 @@ int qpdf_ruby_write(DocumentHandle* handle, const char* out_filename);
 /** Deletes the handle (idempotent). */
 void qpdf_ruby_close(DocumentHandle* handle);
 }
+
+void qpdf_ruby_set_encryption(struct DocumentHandle* handle, const char* user_pw, const char* owner_pw, int R,
+                              qpdf_r3_print_e allow_print,
+                              int allow_modify,  // bool as int (0/1)
+                              int allow_extract, int accessibility, int assemble, int annotate_and_form,
+                              int form_filling, int encrypt_metadata, int use_aes);
 
 }  // namespace qpdf_ruby

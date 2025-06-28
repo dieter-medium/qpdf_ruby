@@ -1,5 +1,7 @@
 #pragma once
 
+#define POINTERHOLDER_TRANSITION 1
+
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFWriter.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
