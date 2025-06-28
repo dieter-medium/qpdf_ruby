@@ -1,6 +1,8 @@
 // x_object_finder.hpp
 #pragma once
 
+#define POINTERHOLDER_TRANSITION 1
+
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
