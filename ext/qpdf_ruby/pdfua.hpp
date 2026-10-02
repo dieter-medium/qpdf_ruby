@@ -66,12 +66,13 @@ long count_figures_without_alt(QPDF& pdf);
 
 // Identifies the file as PDF/UA-1 in its XMP metadata (7.1-8) and sets DisplayDocTitle and
 // Marked. An existing metadata stream keeps everything it has: pdfuaid:part and dc:title are each
-// added only if missing (looked up by namespace, element or attribute form); an existing dc:title is
-// never replaced. Without a stream, a new one is written. The title is `title` if given (it also
-// becomes the information dictionary's /Title), else that /Title. Never throws for odd input:
-// without a structure tree only the title and DisplayDocTitle are set (Marked and pdfuaid would
-// claim a tagged file), and an existing packet whose RDF element cannot be found is left alone -
-// apply() reports both as unidentified_reason. Returns true if anything changed.
+// added only if missing (read with namespace scoping, element or attribute form; comments and CDATA
+// do not count); an existing dc:title is never replaced. Without a stream, a new one is written.
+// The title is `title` if given (it also becomes the information dictionary's /Title), else that
+// /Title. Never throws for odd input: without a structure tree only the title and DisplayDocTitle
+// are set (Marked and pdfuaid would claim a tagged file), and an existing packet that is not
+// well-formed XML with an rdf:RDF element is left alone - apply() reports both as
+// unidentified_reason. Returns true if anything changed.
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title);
 
 struct Report {

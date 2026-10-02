@@ -1,4 +1,5 @@
 #include "pdfua.hpp"
+#include "xmp_scan.hpp"
 
 #include <qpdf/Pl_Buffer.hh>
 #include <qpdf/QPDFNameTreeObjectHelper.hh>
@@ -9,7 +10,6 @@
 
 #include <functional>
 #include <memory>
-#include <regex>
 #include <set>
 #include <vector>
 
@@ -597,37 +597,6 @@ namespace {
 constexpr char kPdfuaNs[] = "http://www.aiim.org/pdfua/ns/id/";
 constexpr char kDcNs[] = "http://purl.org/dc/elements/1.1/";
 
-// Every prefix the packet binds to `uri` (xmlns:prefix="uri"), wherever it is declared.
-std::vector<std::string> xmlns_prefixes(std::string const& xmp, std::string const& uri) {
-  static const std::regex declaration(R"re(xmlns:([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'))re");
-  std::vector<std::string> prefixes;
-  for (std::sregex_iterator it(xmp.begin(), xmp.end(), declaration), end; it != end; ++it) {
-    if ((*it)[2].str() == uri || (*it)[3].str() == uri) prefixes.push_back((*it)[1].str());
-  }
-  return prefixes;
-}
-
-bool is_xml_space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
-
-// True if the packet carries property `local` of namespace `uri`, as an element (<p:local ...>) or
-// in the attribute shorthand XMP allows on rdf:Description (p:local="...") - under any prefix the
-// packet binds to `uri`. Not a full XML parser: a match inside a comment or CDATA counts too.
-bool has_property(std::string const& xmp, std::string const& uri, std::string const& local) {
-  for (auto const& prefix : xmlns_prefixes(xmp, uri)) {
-    std::string const name = prefix + ":" + local;
-    for (size_t at = xmp.find(name); at != std::string::npos; at = xmp.find(name, at + 1)) {
-      size_t after = at + name.size();
-      char next = after < xmp.size() ? xmp[after] : '\0';
-      bool element = at > 0 && xmp[at - 1] == '<' && (is_xml_space(next) || next == '>' || next == '/');
-      size_t equals = after;
-      while (equals < xmp.size() && is_xml_space(xmp[equals])) ++equals;
-      bool attribute = at > 0 && is_xml_space(xmp[at - 1]) && equals < xmp.size() && xmp[equals] == '=';
-      if (element || attribute) return true;
-    }
-  }
-  return false;
-}
-
 // Sets a boolean key unless it already has that value; true if it changed anything.
 bool ensure_true(QPDFObjectHandle dict, std::string const& key) {
   QPDFObjectHandle value = dict.getKey(key);
@@ -647,21 +616,6 @@ QPDFObjectHandle catalog_dict(QPDFObjectHandle root, std::string const& key) {
 namespace {
 
 constexpr char kRdfNs[] = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
-
-// Where the packet's rdf:RDF element closes, and the prefix it uses for the RDF namespace - found
-// the same way as has_property, so not a full XML parser either. npos if no bound prefix closes one
-// (a default-namespace RDF element, or a packet that is not XMP at all).
-std::pair<size_t, std::string> rdf_close(std::string const& xmp) {
-  for (auto const& prefix : xmlns_prefixes(xmp, kRdfNs)) {
-    std::string const tag = "</" + prefix + ":RDF";
-    for (size_t at = xmp.rfind(tag); at != std::string::npos; at = at == 0 ? std::string::npos : xmp.rfind(tag, at - 1)) {
-      size_t after = at + tag.size();
-      while (after < xmp.size() && is_xml_space(xmp[after])) ++after;
-      if (after < xmp.size() && xmp[after] == '>') return {at, prefix};
-    }
-  }
-  return {std::string::npos, ""};
-}
 
 // The identification step, with the reason when the file could not be identified.
 bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<std::string>& unidentified) {
@@ -692,15 +646,17 @@ bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<
   }
   changed = ensure_true(catalog_dict(root, "/MarkInfo"), "/Marked") || changed;
 
-  std::string const part_ns = std::string(" xmlns:pdfuaid=\"") + kPdfuaNs + "\"";
-  std::string const dc_ns = std::string(" xmlns:dc=\"") + kDcNs + "\"";
-  auto description = [&](std::string const& rdf, bool part, bool with_title) {
-    return "<" + rdf + ":Description " + rdf + ":about=\"\"" + (part ? part_ns : "") + (with_title ? dc_ns : "") +
-           ">" + (part ? "<pdfuaid:part>1</pdfuaid:part>" : "") +
-           (with_title ? "<dc:title><" + rdf + ":Alt><" + rdf + ":li xml:lang=\"x-default\">" + xml_escape(doc_title) +
-                             "</" + rdf + ":li></" + rdf + ":Alt></dc:title>"
+  // The new Description declares every prefix it uses itself, so it reads the same whatever
+  // prefixes the packet around it binds.
+  auto description = [&](bool part, bool with_title) {
+    return std::string("<rdf:Description xmlns:rdf=\"") + kRdfNs + "\" rdf:about=\"\"" +
+           (part ? std::string(" xmlns:pdfuaid=\"") + kPdfuaNs + "\"" : "") +
+           (with_title ? std::string(" xmlns:dc=\"") + kDcNs + "\"" : "") + ">" +
+           (part ? "<pdfuaid:part>1</pdfuaid:part>" : "") +
+           (with_title ? "<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">" + xml_escape(doc_title) +
+                             "</rdf:li></rdf:Alt></dc:title>"
                        : "") +
-           "</" + rdf + ":Description>\n";
+           "</rdf:Description>\n";
   };
 
   // An existing packet keeps everything it has; only what is missing goes into one new
@@ -709,24 +665,23 @@ bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<
   if (metadata.isStream()) {
     auto data = metadata.getStreamData(qpdf_dl_generalized);
     std::string xmp(reinterpret_cast<char const*>(data->getBuffer()), data->getSize());
-    bool add_part = !has_property(xmp, kPdfuaNs, "part");
-    bool add_title = !doc_title.empty() && !has_property(xmp, kDcNs, "title");
-    if (!add_part && !add_title) return changed;
-
-    auto [end, rdf] = rdf_close(xmp);
-    if (end == std::string::npos) {
+    xmp::Scan packet = xmp::scan(xmp);
+    if (!packet.well_formed || packet.rdf_close == std::string::npos) {
       // Replacing the packet would lose what it holds; leave it, and say so.
-      unidentified = "existing XMP metadata has no closing RDF element with a namespace prefix";
+      unidentified = "existing XMP metadata is not well-formed XML with an rdf:RDF element";
       return changed;
     }
-    xmp.insert(end, description(rdf, add_part, add_title));
+    bool add_part = !packet.has(kPdfuaNs, "part");
+    bool add_title = !doc_title.empty() && !packet.has(kDcNs, "title");
+    if (!add_part && !add_title) return changed;
+    xmp.insert(packet.rdf_close, description(add_part, add_title));
     metadata.replaceStreamData(xmp, QPDFObjectHandle::newNull(), QPDFObjectHandle::newNull());
     return true;
   }
 
   std::string xmp = "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
                     "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"" +
-                    std::string(kRdfNs) + "\">\n" + description("rdf", true, !doc_title.empty()) +
+                    std::string(kRdfNs) + "\">\n" + description(true, !doc_title.empty()) +
                     "</rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
   QPDFObjectHandle stream = QPDFObjectHandle::newStream(&pdf, xmp);
   stream.getDict().replaceKey("/Type", QPDFObjectHandle::newName("/Metadata"));

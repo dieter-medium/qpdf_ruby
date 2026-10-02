@@ -33,11 +33,76 @@ RSpec.describe "PDF/UA fixes on unusual input" do
     let(:doc) { open_pdf(EdgeCasePdfs.with_xmp(xmp)) }
 
     it "reports why the file is not identified instead of raising" do
-      expect(doc.apply_pdfua_fixes(title: "A")[:unidentified_reason]).to include("no closing RDF element")
+      expect(doc.apply_pdfua_fixes(title: "A")[:unidentified_reason]).to include("with an rdf:RDF element")
     end
 
     it "leaves the metadata as it was" do
       doc.apply_pdfua_fixes(title: "A")
+
+      expect(doc.metadata).to eq(xmp)
+    end
+  end
+
+  context "with the identification and the title only inside an XML comment" do
+    let(:commented) { "<!-- <pdfuaid:part>1</pdfuaid:part><dc:title xmlns:dc=\"http://purl.org/dc/elements/1.1/\"/> -->" }
+    let(:doc) { open_pdf(EdgeCasePdfs.with_xmp(EdgeCasePdfs.xmp_packet(commented))) }
+
+    it "adds the identification" do
+      doc.add_pdfua_identification(title: "A")
+
+      expect(xmp_values(reopened(doc), "//pdfuaid:part")).to eq(["1"])
+    end
+
+    it "adds the title" do
+      doc.add_pdfua_identification(title: "A")
+
+      expect(xmp_values(reopened(doc), "//dc:title/rdf:Alt/rdf:li")).to eq(["A"])
+    end
+  end
+
+  context "with a commented-out closing RDF tag after the real one" do
+    let(:xmp) { EdgeCasePdfs.xmp_packet.sub("</rdf:RDF>", "</rdf:RDF><!-- </rdf:RDF> -->") }
+    let(:doc) { open_pdf(EdgeCasePdfs.with_xmp(xmp)) }
+
+    it "adds the identification to the real RDF element, not into the comment" do
+      doc.add_pdfua_identification(title: "A")
+
+      expect(xmp_values(reopened(doc), "//pdfuaid:part")).to eq(["1"])
+    end
+  end
+
+  context "with a title in the default namespace" do
+    let(:title) { "<title xmlns=\"http://purl.org/dc/elements/1.1/\"><rdf:Alt><rdf:li>B</rdf:li></rdf:Alt></title>" }
+    let(:doc) { open_pdf(EdgeCasePdfs.with_xmp(EdgeCasePdfs.xmp_packet(title))) }
+
+    it "keeps that title as the only one" do
+      doc.add_pdfua_identification(title: "A")
+
+      expect(xmp_values(reopened(doc), "//dc:title/rdf:Alt/rdf:li")).to eq(["B"])
+    end
+  end
+
+  context "with XMP that is not well-formed" do
+    let(:xmp) { EdgeCasePdfs.xmp_packet("<dc:title>") }
+    let(:doc) { open_pdf(EdgeCasePdfs.with_xmp(xmp)) }
+
+    it "leaves it as it was" do
+      doc.add_pdfua_identification(title: "A")
+
+      expect(doc.metadata).to eq(xmp)
+    end
+
+    it "says why in the report" do
+      expect(doc.apply_pdfua_fixes(title: "A")[:unidentified_reason]).to include("not well-formed")
+    end
+  end
+
+  context "with XMP that declares an empty namespace prefix" do
+    let(:xmp) { EdgeCasePdfs.xmp_packet(attributes: ' xmlns:="http://example.com/"') }
+    let(:doc) { open_pdf(EdgeCasePdfs.with_xmp(xmp)) }
+
+    it "treats it as not well-formed and leaves it alone" do
+      doc.add_pdfua_identification(title: "A")
 
       expect(doc.metadata).to eq(xmp)
     end
