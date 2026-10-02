@@ -61,7 +61,8 @@ the crop box is ignored; a Figure with no other content gets the crop box._
 does. Its old behaviour - wrapping rectangles anywhere, also inside tagged content - fixed few
 Chromium decorations and broke rules 7.1-1/7.1-2.
 
-Every error raises `QpdfRuby::Error` (a `RuntimeError`).
+Every error raises `QpdfRuby::Error` (a `RuntimeError`); an argument of the wrong type raises
+`TypeError`, an unknown keyword (`tittle:`) `ArgumentError`.
 
 Checked against veraPDF 1.30.2 on Chromium 154 output (`spec/fixtures/chromium/`): both
 fixtures are PDF/UA-1 compliant after `apply_pdfua_fixes`. A machine check covers the machine
@@ -133,7 +134,9 @@ autotest         # guard & RSpec
   `PATH` (`bin/install-verapdf.sh [DIR]` installs the pinned CLI; needs Java). They are skipped
   otherwise - `REQUIRE_VERAPDF=1`, set in CI, makes them fail instead.
 * `bin/asan-rspec.sh [RSPEC_ARGS]` builds the extension with AddressSanitizer in a scratch copy and
-  runs the specs under it - the only way to see a use-after-free that a plain run survives by luck.
+  runs the specs under it, with LeakSanitizer (`bin/lsan.supp` filters Ruby's own heap) - the way to
+  see a use-after-free a plain run survives by luck. A destructor skipped by a Ruby raise is the one
+  leak it cannot see; `spec/qpdf_ruby/document_error_path_memory_spec.rb` watches RSS for that.
 
 ### Testing with local QPDF builds
 If you tinker with QPDF itself, point Bundler to your custom prefix:

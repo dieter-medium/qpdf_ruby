@@ -62,7 +62,7 @@ std::string DocumentHandle::write_to_memory() {
     w.setOutputMemory();
     w.write();
 
-    auto b = w.getBuffer();
+    auto b = w.getBufferSharedPointer();  // getBuffer() hands over a Buffer the caller must delete
     return std::string(reinterpret_cast<char const*>(b->getBuffer()), b->getSize());
   } catch (std::exception const& ex) {
     throw std::runtime_error("qpdf_ruby: write_to_memory failed: " + std::string(ex.what()));

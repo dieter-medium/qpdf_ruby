@@ -21,6 +21,9 @@ namespace qpdf_ruby {
 //      Ruby code, and can call initialize on the same document, which frees the old handle.
 //   3. Build C++ values (std::string, containers) only inside the lambda given to guarded.
 //   4. Turn a C++ result into Ruby values only through guarded_to_ruby.
+// Checked by bin/asan-rspec.sh (use-after-free, ordinary leaks) and by
+// spec/qpdf_ruby/document_error_path_memory_spec.rb (destructors skipped by a raise, which
+// LeakSanitizer cannot see).
 
 // Runs C++ code from a Ruby method. A C++ exception becomes a QpdfRuby::Error only after the catch
 // block - and every C++ object with a destructor - is gone.

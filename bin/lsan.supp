@@ -1,0 +1,11 @@
+# LeakSanitizer suppressions for bin/asan-rspec.sh. MRI does not free its heap at exit, so every
+# Ruby object, compiled method and regexp shows up as a leak. A suppression matches when any frame
+# of an allocation's stack matches, so each entry names an allocation site inside Ruby itself -
+# never a frame that a leak in ext/qpdf_ruby (allocated with operator new) would pass through.
+# Ruby's GC-managed malloc (objects, strings, arrays, ISeqs, ...):
+leak:rb_gc_impl_malloc
+leak:rb_gc_impl_calloc
+leak:rb_gc_impl_realloc
+# Onigmo, Ruby's regexp engine (compiled patterns live as long as the process):
+leak:onig_
+leak:rb_reg_
