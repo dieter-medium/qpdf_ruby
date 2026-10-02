@@ -1,37 +1,73 @@
 # QpdfRuby
 
-> **Patch & polish PDFs so that PAC 2024 finally turns green.**
+> **Make Chromium's tagged PDFs PDF/UA-1 conformant.**
 
-QpdfRuby is a very small Ruby wrapper around the battle‑tested
-[QPDF \>= 12](https://qpdf.sourceforge.net/) C++ library.  Right now the
-library focuses on only **three specialised tasks** that are needed when
-PDFs are printed from Chromium‑based browsers and subsequently audited
-with the PAC 2024 accessibility checker:
+QpdfRuby is a small Ruby wrapper around the [QPDF](https://qpdf.sourceforge.net/) C++ library,
+made for PDFs printed by Chromium (`Page.printToPDF` with `generateTaggedPDF`) and checked with
+veraPDF or PAC 2024. Chromium tags the text of a page but leaves gaps that PDF/UA-1 rejects; the
+gem closes them without touching the content that is tagged:
 
-1. **Export the structure tree as XML** – handy for debugging.
-2. **Mark vector path objects as `/Artifact`** so that decorative lines,
-   boxes, &c. are ignored by assistive technologies.
-3. **Add missing `/BBox` entries to every `/Figure` element** (derived
-   from the page’s graphic operators) so that screen readers know the
-   physical extent of each image.
+| PDF/UA-1 rule (veraPDF) | What Chromium does | What QpdfRuby does | Ruby API |
+| --- | --- | --- | --- |
+| 7.1-3 untagged content | backgrounds, borders, bars, `aria-hidden` and SVG decorations end up outside any marked content; it never writes `/Artifact` | wraps every painting operation outside marked content in `/Artifact BMC … EMC` (not a Form XObject that carries tagged content) | `doc.mark_untagged_content_as_artifacts` |
+| PAC: content in an inadmissible location, invalid TR | CSS backgrounds and borders are tagged as content of the grouping element they belong to (a `Table`'s cell backgrounds, an `<article>`'s card) | turns such shape-only content into artifacts and takes it out of the structure tree; content with text stays tagged | `doc.artifact_tagged_decorations` |
+| 7.18.1-2, 7.18.5-2 link descriptions | no `/Contents` on Link annotations | your text per URI, else the structure element's `/Alt`/`/ActualText`, else the URI (internal links: your text for `"#<destination>"`, else "Page N" - named destinations from `/Dests`, string destinations from the `/Names` tree) | `doc.describe_links(texts = {})` |
+| 7.2-20 list items | `LI` holds `Lbl` and the content directly, never `LBody` | moves the content into an `LBody`, ParentTree entries updated (a Form XObject's MCIDs in its own entry) | `doc.wrap_list_bodies` |
+| 7.1-5 non-standard types | PDF 2.0 types (`Strong`, `Em`, `Aside`, …) without a RoleMap | maps them to PDF 1.7 types in the RoleMap (table below) | `doc.map_nonstandard_roles` |
+| 7.3-1 figure alternative | an HTML `<figure>` becomes a `Figure` without alt text around the image's own `Figure` | retags that grouping `Figure` as `Div` | `doc.retag_grouping_figures` |
+| 7.1-8 metadata | no XMP `pdfuaid` identification | adds `pdfuaid:part 1` and `dc:title`, each only if missing (read namespace-aware - a commented-out one does not count, an empty one does; extends existing XMP, never replaces a title), sets `DisplayDocTitle` and `Marked` - the identification only for a file with a structure tree | `doc.add_pdfua_identification(title: nil)` |
 
-Together these tweaks eliminate the most common complaints PAC 2024 has
-about browser‑generated PDFs.
+`doc.apply_pdfua_fixes(link_texts: {}, title: nil)` runs all of them and returns a report.
+Each step only adds what is missing, so running it twice changes nothing (the report's
+`identified` is true only when the identification step changed something). When the file cannot
+be identified - it has no structure tree, or its existing XMP has no RDF element the gem can find -
+the other steps still run and `unidentified_reason` says why; it is `nil` otherwise. Figures that
+have no alternative text at all cannot be fixed by a tool - `doc.figures_without_alt` counts them.
 
----
+The RoleMap entries `map_nonstandard_roles` adds, each only for a type the file uses and does not
+map yet. Some are lossy - an assistive technology reads `Title` as a paragraph, `Aside` as a
+section:
 
-## Features in Detail
+| PDF 2.0 type | mapped to |
+| --- | --- |
+| `Aside` | `Sect` |
+| `DocumentFragment` | `Part` |
+| `Em`, `Strong`, `Sub` | `Span` |
+| `FENote` | `Note` |
+| `Title` | `P` |
 
-| Feature                                        | Ruby API                                 |
-| ---------------------------------------------- | ---------------------------------------- |
-| Dump structure tree as XML                     | `doc.show_structure`                     |
-| Mark path objects ( `re … S/s/f/F/B/b` )       | `doc.mark_paths_as_artifacts`            |
-| Ensure `/Figure` elements have a layout BBox¹  | `doc.ensure_bbox`                        |
+Untagged content is looked for in page content and the Form XObjects it draws - not in annotation
+appearance streams, tiling patterns or Type 3 glyph procedures, which Chromium does not emit.
 
-_¹Internally the gem parses each page’s content stream, maps image
-`/MCID`s to their transformation matrix, computes the bounding box
-(courtesy of a little linear algebra) and finally writes the result into
-the structure tree._
+Also:
+
+| Feature | Ruby API |
+| --- | --- |
+| Count untagged content (dry run, per kind) | `doc.untagged_content` |
+| Add a layout `/BBox` to every `/Figure`¹, and `/Placement /Block` to one outside a line of text (PAC 2024 warns of a "possibly inappropriate use" of a Figure without it) | `doc.ensure_bbox` |
+| Dump the structure tree as XML | `doc.show_structure` |
+| Inspect links, XMP, RoleMap | `doc.links`, `doc.metadata`, `doc.role_map` |
+| Count ParentTree entries that do not name their content's structure element (0 = consistent) | `doc.parent_tree_mismatches` |
+| Encrypt | `doc.encrypt(user_pw:, owner_pw:, …)` |
+| Read/write files or memory | `Document.new(path, password = nil)`, `Document.from_memory(bytes, password = nil)`, `#write(path)`, `#to_memory` |
+
+_¹The gem parses each page's content stream, and the content of the Form XObjects it draws, under
+the full transformation matrix and unites what each piece of marked content paints - images, Form
+XObjects, paths - per page, content stream and MCID (a marked-content reference's `/Stm` names the
+form whose MCIDs it means). A stroked path counts with its line width, caps and joins (from `w`, `J`,
+`j`, `M` or an ExtGState); a curve's stroke is bounded a little generously. Text adds nothing (its extent needs font metrics), and content outside
+the crop box is ignored; a Figure with no other content gets the crop box._
+
+`#mark_paths_as_artifacts` is deprecated: it now does what `#mark_untagged_content_as_artifacts`
+does. Its old behaviour - wrapping rectangles anywhere, also inside tagged content - fixed few
+Chromium decorations and broke rules 7.1-1/7.1-2.
+
+Every error raises `QpdfRuby::Error` (a `RuntimeError`); an argument of the wrong type raises
+`TypeError`, an unknown keyword (`tittle:`) `ArgumentError`.
+
+Checked against veraPDF 1.30.2 on Chromium 154 output (`spec/fixtures/chromium/`): both
+fixtures are PDF/UA-1 compliant after `apply_pdfua_fixes`. A machine check covers the machine
+checkable part only - alternative texts, headings and reading order still need a person.
 
 ---
 
@@ -39,8 +75,8 @@ the structure tree._
 
 ### Requirements
 
-* **Ruby** \>= 3.1
-* **QPDF** \>= 12.0.0 (headers & libs)
+* **Ruby** \>= 3.3 (tested with 3.3, 3.4 and 4.0)
+* **QPDF** \>= 11.9 (headers & libs; tested with 11.9.1 and 12.2)
 
 ### macOS
 ```bash
@@ -50,12 +86,11 @@ bundle config set --local build.qpdf_ruby "--with-qpdf-dir=$(brew --prefix qpdf)
 
 ### Debian/Ubuntu
 ```bash
-# on Debian 11/Ubuntu 20.04 you may need newer packages from testing
+# Debian 13 (trixie) and newer ship QPDF 12
 sudo apt-get update && sudo apt-get install -y libqpdf-dev qpdf
 ```
-If `apt` cannot provide QPDF ≥ 12 you can compile it yourself or pull the
-package from *testing/unstable* – see the [Dockerfile](./docker/Dockerfile) for a working
-`apt preferences` snippet.
+If `apt` cannot provide QPDF ≥ 11.9, compile it yourself or use Debian trixie (see the
+[Dockerfile](./docker/Dockerfile)).
 
 ### Add the gem
 ```bash
@@ -70,23 +105,18 @@ bundle add qpdf_ruby
 ```ruby
 require "qpdf_ruby"
 
-pdf = QpdfRuby::Document.new("input.pdf")
+pdf = QpdfRuby::Document.new("chromium-output.pdf")
 
-# 1. tag decorative paths
-pdf.mark_paths_as_artifacts
+report = pdf.apply_pdfua_fixes(
+  link_texts: { "mailto:jana@example.com" => "E-mail Jana" }, # optional, per URI or "#destination"
+  title: "Curriculum vitae - Jana Example"                    # optional, else the PDF's /Title
+)
+# => { decorations: 3, artifacts: { paths: 75, texts: 101, …, total: 176 }, links: 2, list_bodies: 34,
+#      roles: 0, figure_groups: 0, figures_without_alt: 0, identified: true, unidentified_reason: nil }
 
-# 2. add BBox to every <Figure>
-pdf.ensure_bbox
-
-# 3. introspect structure tree (optional)
-File.write("structure.xml", pdf.show_structure)
-
-# 4. save 🎉
-pdf.write("fixed.pdf")
+pdf.ensure_bbox                     # layout BBoxes for figures (PAC 2024 asks for them)
+pdf.write("accessible.pdf")         # or pdf.to_memory
 ```
-
-Run PAC 2024 on `fixed.pdf` – it should report far fewer (or zero!)
-errors compared to the original browser output.
 
 ---
 
@@ -97,7 +127,17 @@ cd qpdf_ruby
 bin/setup        # install gem + test deps
 autotest         # guard & RSpec
 ```
-* Bump **version.rb** → `bundle exec rake release` to push a new gem.
+* Bump **version.rb** → `bundle exec rake release` to push a new gem. It first runs
+  `rake release_credentials_check`, which shows where the push credential comes from: a set
+  `GEM_HOST_API_KEY` wins (as in RubyGems), else `gem.push_key` in the credentials file RubyGems uses,
+  else that file's key for the push host, else its `rubygems_api_key`.
+* `bundle exec rspec` runs the specs; the veraPDF examples run only where `verapdf` is on the
+  `PATH` (`bin/install-verapdf.sh [DIR]` installs the pinned CLI; needs Java). They are skipped
+  otherwise - `REQUIRE_VERAPDF=1`, set in CI, makes them fail instead.
+* `bin/asan-rspec.sh [RSPEC_ARGS]` builds the extension with AddressSanitizer in a scratch copy and
+  runs the specs under it, with LeakSanitizer (`bin/lsan.supp` filters Ruby's own heap) - the way to
+  see a use-after-free a plain run survives by luck. A destructor skipped by a Ruby raise is the one
+  leak it cannot see; `spec/qpdf_ruby/document_error_path_memory_spec.rb` watches RSS for that.
 
 ### Testing with local QPDF builds
 If you tinker with QPDF itself, point Bundler to your custom prefix:
@@ -119,7 +159,7 @@ Bug reports & pull requests are welcome at
 
 ### Code Style
 * C++ 17, clang‑format enforced
-* Ruby 3.2, rubocop default rules
+* Ruby 3.3, rubocop default rules
 
 ---
 

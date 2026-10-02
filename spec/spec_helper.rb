@@ -1,7 +1,10 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "qpdf_ruby"
 require "nokogiri"
+
+Dir[File.join(__dir__, "support/**/*.rb")].each { |file| require file }
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure

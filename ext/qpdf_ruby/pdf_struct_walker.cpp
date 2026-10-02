@@ -1,8 +1,8 @@
 #include "pdf_struct_walker.hpp"
 #include "struct_node.hpp"
 
-PDFStructWalker::PDFStructWalker(std::ostream& out, const std::unordered_map<int, std::array<double, 4>>& mcid2bbox)
-    : out(out), mcid2bbox(const_cast<std::unordered_map<int, std::array<double, 4>>&>(mcid2bbox)) {}
+PDFStructWalker::PDFStructWalker(std::ostream& out, qpdf_ruby::McidBounds bounds)
+    : out(out), mcid_bounds(std::move(bounds)) {}
 
 std::string PDFStructWalker::get_structure_as_string(QPDFObjectHandle const& node) {
   std::unique_ptr<StructNode> structNode = StructNode::fromQPDF(node);
@@ -19,28 +19,21 @@ void PDFStructWalker::ensureLayoutBBox(QPDFObjectHandle const& node) {
 void PDFStructWalker::buildPageObjectMap(QPDF& pdf) {
   pageObjToNumMap.clear();
   std::vector<QPDFObjectHandle> pages = pdf.getAllPages();
-  for (int i = 0; i < pages.size(); ++i) {
+  for (size_t i = 0; i < pages.size(); ++i) {
     // Map the page's object ID to its 1-based page number
-    pageObjToNumMap[pages.at(i).getObjGen()] = i + 1;
+    pageObjToNumMap[pages.at(i).getObjGen()] = static_cast<int>(i) + 1;
   }
 }
 
 const std::map<QPDFObjGen, int>& PDFStructWalker::getPageObjectMap() const { return pageObjToNumMap; }
 
 std::array<double, 4> PDFStructWalker::getPageCropBoxFor(QPDFObjectHandle const& page_oh) const {
-  auto inherited = [](QPDFObjectHandle node, char const* key) -> QPDFObjectHandle {
-    while (!node.isNull()) {
-      if (auto val = node.getKey(key); !val.isNull()) return val;
-      node = node.getKey("/Parent");
-    }
-    return QPDFObjectHandle();  // null ⇒ not found
-  };
-
-  QPDFObjectHandle crop = inherited(page_oh, "/CropBox");
-  if (crop.isNull()) crop = inherited(page_oh, "/MediaBox");  // spec default
-
-  std::array<double, 4> r;
-  for (size_t i = 0; i < 4; ++i) r[i] = crop.getArrayItem(i).getNumericValue();
-
+  // getCropBox() follows inheritance through the page tree and falls back to the MediaBox. Its
+  // arguments would copy an inherited box into the page - a write in what is a read.
+  QPDFObjectHandle crop = QPDFPageObjectHelper(page_oh).getCropBox();
+  std::array<double, 4> r = {0, 0, 0, 0};
+  if (crop.isArray() && crop.getArrayNItems() == 4) {
+    for (int i = 0; i < 4; ++i) r[i] = crop.getArrayItem(i).getNumericValue();
+  }
   return r;
 }

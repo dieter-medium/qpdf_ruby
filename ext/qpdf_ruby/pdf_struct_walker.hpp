@@ -16,14 +16,16 @@
 #include <regex>
 #include <map>
 
+#include "mcid_bounds.hpp"
+
 class PDFStructWalker {
  private:
   std::ostream& out;
   std::map<QPDFObjGen, int> pageObjToNumMap;
-  std::unordered_map<int, std::array<double, 4>>& mcid2bbox;
+  qpdf_ruby::McidBounds mcid_bounds;
 
  public:
-  PDFStructWalker(std::ostream& out = std::cout, const std::unordered_map<int, std::array<double, 4>>& mcid2bbox = {});
+  explicit PDFStructWalker(std::ostream& out = std::cout, qpdf_ruby::McidBounds bounds = {});
 
   void buildPageObjectMap(QPDF& pdf);
   std::string get_structure_as_string(QPDFObjectHandle const& node);
@@ -32,5 +34,5 @@ class PDFStructWalker {
   const std::map<QPDFObjGen, int>& getPageObjectMap() const;
   std::array<double, 4> getPageCropBoxFor(QPDFObjectHandle const& elem) const;
 
-  const std::unordered_map<int, std::array<double, 4>>& getMcidBboxMap() const { return mcid2bbox; }
+  const qpdf_ruby::McidBounds& getMcidBounds() const { return mcid_bounds; }
 };

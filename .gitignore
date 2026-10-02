@@ -14,3 +14,6 @@ mkmf.log
 
 # rspec failure tracking
 .rspec_status
+
+# Local container tooling (build, specs, release shell) - never committed, as in bidi2pdf.
+/docker-claude/
