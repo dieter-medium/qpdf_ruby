@@ -43,7 +43,7 @@ RSpec.describe QpdfRuby do
 
     File.binwrite(tmp_file_from_memory, out_buf)
 
-    doc = QpdfRuby::Document.new tmp_file
+    doc = QpdfRuby::Document.new tmp_file_from_memory
 
     actual_structure = doc.show_structure
 
