@@ -7,6 +7,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
 
   pull_request:
 
@@ -35,8 +37,13 @@ jobs:
       # The veraPDF examples in spec/acceptance/chromium_pdfua_spec.rb are the PDF/UA-1 conformance
       # check; REQUIRE_VERAPDF=1 makes them fail instead of skip if this step left no verapdf behind.
       # Java, curl and unzip come with the runner image.
+      - name: Cache veraPDF
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/verapdf
+          key: verapdf-${{ runner.os }}-${{ hashFiles('bin/install-verapdf.sh') }}
       - name: Install veraPDF
-        run: dirname "$(bin/install-verapdf.sh "$RUNNER_TEMP/verapdf")" >> "$GITHUB_PATH"
+        run: dirname "$(bin/install-verapdf.sh "$HOME/verapdf")" >> "$GITHUB_PATH"
       - name: Run the default task
         env:
           REQUIRE_VERAPDF: "1"
@@ -96,7 +103,6 @@ jobs:
         with:
           images: dieters877565/qpdf-ruby
           tags: |
-            type=raw,value=${{ inputs.dockerImageTag }},enable=${{ inputs.dockerImageTag != '' }}
             type=ref,event=branch,suffix=${{matrix.variant.suffix}}
             type=semver,pattern={{version}}${{matrix.variant.suffix}}
 
@@ -106,7 +112,8 @@ jobs:
         with:
           context: .
           file: ${{ matrix.variant.file }}
-          push: false
+          # Pushes from main and v* tags only - the job never runs for pull requests.
+          push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

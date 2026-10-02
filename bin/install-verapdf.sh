@@ -5,6 +5,8 @@
 #
 #   bin/install-verapdf.sh [INSTALL_DIR]    # default: $HOME/verapdf; prints the verapdf path
 #
+# Does nothing but print the path when INSTALL_DIR already holds this version (a CI cache hit).
+#
 # The sha256 pins the release checked against its PGP signature (key
 # 13DD102B4DD69354D12DE5A83184863278B17FE7, Carl Wilson <techlead@verapdf.org>) on 2026-09-29;
 # re-check the signature when bumping.
@@ -30,6 +32,12 @@ install_dir="${1:-${HOME}/verapdf}"
 if [[ "${install_dir}" != /* ]]; then
   printf 'error: INSTALL_DIR must be an absolute path, got %s\n' "${install_dir}" >&2
   exit 1
+fi
+
+installed="$("${install_dir}/verapdf" --version 2>/dev/null || true)"
+if [[ "${installed%%$'\n'*}" == "veraPDF ${VERAPDF_VERSION}" ]]; then
+  printf '%s\n' "${install_dir}/verapdf"
+  exit 0
 fi
 
 for tool in java curl unzip sha256sum; do
