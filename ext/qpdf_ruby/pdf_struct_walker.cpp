@@ -1,8 +1,8 @@
 #include "pdf_struct_walker.hpp"
 #include "struct_node.hpp"
 
-PDFStructWalker::PDFStructWalker(std::ostream& out, const std::unordered_map<int, std::array<double, 4>>& mcid2bbox)
-    : out(out), mcid2bbox(const_cast<std::unordered_map<int, std::array<double, 4>>&>(mcid2bbox)) {}
+PDFStructWalker::PDFStructWalker(std::ostream& out, qpdf_ruby::McidBounds bounds)
+    : out(out), mcid_bounds(std::move(bounds)) {}
 
 std::string PDFStructWalker::get_structure_as_string(QPDFObjectHandle const& node) {
   std::unique_ptr<StructNode> structNode = StructNode::fromQPDF(node);
@@ -28,19 +28,11 @@ void PDFStructWalker::buildPageObjectMap(QPDF& pdf) {
 const std::map<QPDFObjGen, int>& PDFStructWalker::getPageObjectMap() const { return pageObjToNumMap; }
 
 std::array<double, 4> PDFStructWalker::getPageCropBoxFor(QPDFObjectHandle const& page_oh) const {
-  auto inherited = [](QPDFObjectHandle node, char const* key) -> QPDFObjectHandle {
-    while (!node.isNull()) {
-      if (auto val = node.getKey(key); !val.isNull()) return val;
-      node = node.getKey("/Parent");
-    }
-    return QPDFObjectHandle();  // null ⇒ not found
-  };
-
-  QPDFObjectHandle crop = inherited(page_oh, "/CropBox");
-  if (crop.isNull()) crop = inherited(page_oh, "/MediaBox");  // spec default
-
-  std::array<double, 4> r;
-  for (size_t i = 0; i < 4; ++i) r[i] = crop.getArrayItem(i).getNumericValue();
-
+  // getCropBox(true) follows inheritance through the page tree and falls back to the MediaBox.
+  QPDFObjectHandle crop = QPDFPageObjectHelper(page_oh).getCropBox(true);
+  std::array<double, 4> r = {0, 0, 0, 0};
+  if (crop.isArray() && crop.getArrayNItems() == 4) {
+    for (int i = 0; i < 4; ++i) r[i] = crop.getArrayItem(i).getNumericValue();
+  }
   return r;
 }

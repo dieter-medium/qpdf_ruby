@@ -3,9 +3,6 @@
 
 #include "ruby.h"
 
-VALUE rb_qpdf_mark_paths_as_artifacts(VALUE self);
-VALUE rb_qpdf_ensure_bboxs(VALUE self);
-VALUE rb_qpdf_get_structure_string(VALUE self);
-VALUE rb_qpdf_doc_set_encryption(int argc, VALUE* argv, VALUE self);
+extern "C" void Init_qpdf_ruby(void);
 
 #endif /* QPDF_RUBY_H */

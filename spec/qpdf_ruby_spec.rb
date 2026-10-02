@@ -19,7 +19,7 @@ RSpec.describe QpdfRuby do
 
   it "patches the StructTreeRoot" do
     doc = QpdfRuby::Document.new(fixture_file("example_accessibility.pdf"))
-    doc.mark_paths_as_artifacts
+    doc.mark_untagged_content_as_artifacts
     doc.ensure_bbox
     doc.write tmp_file
 
@@ -36,7 +36,7 @@ RSpec.describe QpdfRuby do
     in_buf = File.binread(fixture_file("example_accessibility.pdf"))
 
     doc = QpdfRuby::Document.from_memory(in_buf, "")
-    doc.mark_paths_as_artifacts
+    doc.mark_untagged_content_as_artifacts
     doc.ensure_bbox
 
     out_buf = doc.to_memory
@@ -57,7 +57,7 @@ RSpec.describe QpdfRuby do
     doc = QpdfRuby::Document.new(fixture_file("example_accessibility.pdf"))
 
     # only needed to get the expected structure
-    doc.mark_paths_as_artifacts
+    doc.mark_untagged_content_as_artifacts
     doc.ensure_bbox
 
     doc.encrypt(
