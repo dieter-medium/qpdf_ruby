@@ -44,7 +44,7 @@ Also:
 | Feature | Ruby API |
 | --- | --- |
 | Count untagged content (dry run, per kind) | `doc.untagged_content` |
-| Add a layout `/BBox` to every `/Figure`¹ | `doc.ensure_bbox` |
+| Add a layout `/BBox` to every `/Figure`¹, and `/Placement /Block` to one outside a line of text (PAC 2024 warns of a "possibly inappropriate use" of a Figure without it) | `doc.ensure_bbox` |
 | Dump the structure tree as XML | `doc.show_structure` |
 | Inspect links, XMP, RoleMap | `doc.links`, `doc.metadata`, `doc.role_map` |
 | Count ParentTree entries that do not name their content's structure element (0 = consistent) | `doc.parent_tree_mismatches` |

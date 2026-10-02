@@ -57,16 +57,23 @@ module UnusualInputPdfs
   end
 
   # A Figure (MCID 0) whose page content is `content`, wrapped in its marked-content sequence;
-  # `resources` is the page's /Resources dictionary.
-  def with_figure_drawing(content, resources: "<< >>")
+  # `resources` is the page's /Resources dictionary, `attributes` extra entries of the Figure
+  # (e.g. "/A << ... >>"), and `parents` the types of the elements between the root and the Figure,
+  # outermost first (objects 6, 7, ...; the Figure comes last).
+  def with_figure_drawing(content, resources: "<< >>", attributes: "", parents: [])
+    figure_number = 6 + parents.size
+    wrappers = parents.each_with_index.map do |type, i|
+      "<< /Type /StructElem /S /#{type} /P #{i.zero? ? 5 : 5 + i} 0 R /Pg 3 0 R /K [#{7 + i} 0 R] >>"
+    end
+    figure = "<< /Type /StructElem /S /Figure /P #{figure_number - 1} 0 R /Pg 3 0 R /Alt (Drawing) /K 0 #{attributes} >>"
     MinimalPdf.build([
       "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R >>",
       "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /StructParents 0 /Resources #{resources} " \
       "/Contents 4 0 R >>",
       ["<< >>", "/Figure << /MCID 0 >> BDC #{content} EMC\n"],
-      "<< /Type /StructTreeRoot /K [6 0 R] /ParentTree << /Nums [0 [6 0 R]] >> /ParentTreeNextKey 1 >>",
-      "<< /Type /StructElem /S /Figure /P 5 0 R /Pg 3 0 R /Alt (Drawing) /K 0 >>"
+      "<< /Type /StructTreeRoot /K [6 0 R] /ParentTree << /Nums [0 [#{figure_number} 0 R]] >> /ParentTreeNextKey 1 >>",
+      *wrappers, figure
     ])
   end
 end

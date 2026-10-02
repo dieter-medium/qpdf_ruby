@@ -52,8 +52,37 @@ void collect_bounds(QPDFObjectHandle elem, qpdf_ruby::McidBounds const& bounds, 
   }
 }
 
-bool is_layout_with_bbox(QPDFObjectHandle attrs) {
-  return attrs.isDictionary() && attrs.getKey("/O").isNameAndEquals("/Layout") && attrs.hasKey("/BBox");
+bool is_layout(QPDFObjectHandle attrs) {
+  return attrs.isDictionary() && attrs.getKey("/O").isNameAndEquals("/Layout");
+}
+
+// The element's Layout attribute dictionary - /A itself, or the first one in an /A array - or null.
+QPDFObjectHandle layout_of(QPDFObjectHandle attrs) {
+  if (is_layout(attrs)) return attrs;
+  if (attrs.isArray()) {
+    for (auto item : attrs.aitems()) {
+      if (is_layout(item)) return item;
+    }
+  }
+  return QPDFObjectHandle::newNull();
+}
+
+// Structure types whose content is a line of text: a Figure among them is part of that line.
+const std::set<std::string> kInlineParents = {"/P",    "/H",        "/H1",      "/H2",  "/H3",  "/H4",   "/H5",
+                                              "/H6",   "/Lbl",      "/Span",    "/Quote", "/Note", "/Reference",
+                                              "/BibEntry", "/Code", "/Link",    "/Annot", "/Ruby", "/Warichu",
+                                              "/Strong", "/Em"};
+
+// True if the Figure sits in a line of text - its nearest parent that is not a NonStruct (which
+// only groups, ISO 32000-1 14.8.4.2) is one of kInlineParents.
+bool in_inline_context(QPDFObjectHandle elem) {
+  QPDFObjectHandle parent = elem.getKey("/P");
+  for (int guard = 0; guard < 64 && parent.isDictionary(); ++guard) {
+    if (!parent.getKey("/S").isNameAndEquals("/NonStruct")) break;
+    parent = parent.getKey("/P");
+  }
+  QPDFObjectHandle type = parent.isDictionary() ? parent.getKey("/S") : QPDFObjectHandle::newNull();
+  return type.isName() && kInlineParents.count(type.getName()) > 0;
 }
 
 QPDFObjectHandle box_array(qpdf_ruby::Box const& box) {
@@ -64,34 +93,37 @@ QPDFObjectHandle box_array(qpdf_ruby::Box const& box) {
 
 }  // namespace
 
+// Gives the Figure a Layout attribute with a /BBox (its painted bounds) and, outside a line of text,
+// /Placement /Block - without the placement PAC 2024 warns of a "possibly inappropriate use" of the
+// Figure (checked 2026-10-02). Existing values are kept; an existing attribute object is extended.
 void FigureNode::ensureLayoutBBox(PDFStructWalker& walker) {
   StructElemNode::ensureLayoutBBox(walker);
 
   QPDFObjectHandle attrs = node.getKey("/A");
-  if (is_layout_with_bbox(attrs)) return;
-  if (attrs.isArray()) {
-    for (auto item : attrs.aitems()) {
-      if (is_layout_with_bbox(item)) return;
-    }
-  }
+  QPDFObjectHandle layout = layout_of(attrs);
+  bool needs_bbox = !(layout.isDictionary() && layout.hasKey("/BBox"));
+  bool needs_placement = !(layout.isDictionary() && layout.hasKey("/Placement")) && !in_inline_context(node);
+  if (!needs_bbox && !needs_placement) return;
 
   std::optional<qpdf_ruby::Box> box;
-  std::set<QPDFObjGen> seen;
-  collect_bounds(node, walker.getMcidBounds(), box, seen);
-  if (!box) {
+  if (needs_bbox) {
+    std::set<QPDFObjGen> seen;
+    collect_bounds(node, walker.getMcidBounds(), box, seen);
     QPDFObjectHandle page = page_of(node);
-    if (!page.isDictionary()) return;  // nothing to anchor a BBox to
-    box = walker.getPageCropBoxFor(page);
+    if (!box && page.isDictionary()) box = walker.getPageCropBoxFor(page);  // else nothing to anchor it to
   }
+  if (!box && !needs_placement) return;
 
-  // Keep every existing attribute object: add /BBox to a Layout dictionary, else append one.
-  if (attrs.isDictionary() && attrs.getKey("/O").isNameAndEquals("/Layout")) {
-    attrs.replaceKey("/BBox", box_array(*box));
-    return;
+  bool attached = layout.isDictionary();
+  if (!attached) {
+    layout = QPDFObjectHandle::newDictionary();
+    layout.replaceKey("/O", QPDFObjectHandle::newName("/Layout"));
   }
-  QPDFObjectHandle layout = QPDFObjectHandle::newDictionary();
-  layout.replaceKey("/O", QPDFObjectHandle::newName("/Layout"));
-  layout.replaceKey("/BBox", box_array(*box));
+  if (box) layout.replaceKey("/BBox", box_array(*box));
+  if (needs_placement) layout.replaceKey("/Placement", QPDFObjectHandle::newName("/Block"));
+  if (attached) return;
+
+  // Keep every existing attribute object: append the new Layout dictionary to them.
   if (attrs.isArray()) {
     attrs.appendItem(layout);
   } else if (attrs.isDictionary()) {
