@@ -133,8 +133,9 @@ static VALUE doc_write(VALUE self, VALUE out_filename) {
 
 static VALUE doc_to_memory(VALUE self) {
   DocumentHandle* h = handle_of(self);
-  return guarded_to_ruby([&] { return h->write_to_memory(); },
-                         [](std::string const& bytes) { return rb_str_new(bytes.data(), static_cast<long>(bytes.size())); });
+  return guarded_to_ruby([&] { return h->write_to_memory(); }, [](std::string const& bytes) {
+    return rb_str_new(bytes.data(), static_cast<long>(bytes.size()));
+  });
 }
 
 // ---- structure tree --------------------------------------------------------------------------
@@ -318,15 +319,17 @@ static VALUE doc_role_map(VALUE self) {
       });
 }
 
-static VALUE kwarg(VALUE kwargs, char const* name) {
-  if (NIL_P(kwargs)) return Qnil;
-  return rb_hash_lookup2(kwargs, ID2SYM(rb_intern(name)), Qnil);
-}
+// rb_get_kwargs raises ArgumentError for an unknown keyword (a typo like tittle:) and leaves Qundef
+// for one not given; this turns that into nil.
+static VALUE given(VALUE value) { return value == Qundef ? Qnil : value; }
 
 static VALUE doc_add_pdfua_identification(int argc, VALUE* argv, VALUE self) {
   VALUE kwargs = Qnil;
   rb_scan_args(argc, argv, ":", &kwargs);
-  VALUE title = checked_optional_string(kwarg(kwargs, "title"));
+  ID keys[1] = {rb_intern("title")};
+  VALUE values[1];
+  rb_get_kwargs(kwargs, keys, 0, 1, values);
+  VALUE title = checked_optional_string(given(values[0]));
   DocumentHandle* h = handle_of(self);
   bool changed = guarded([&] { return pdfua::add_pdfua_identification(h->qpdf(), cpp_optional_string(title)); });
   RB_GC_GUARD(title);
@@ -338,12 +341,15 @@ static VALUE report_hash(pdfua::Report const& report);
 static VALUE doc_apply_pdfua_fixes(int argc, VALUE* argv, VALUE self) {
   VALUE kwargs = Qnil;
   rb_scan_args(argc, argv, ":", &kwargs);
-  VALUE pairs = checked_link_texts(kwarg(kwargs, "link_texts"));
-  VALUE title = checked_optional_string(kwarg(kwargs, "title"));
+  ID keys[2] = {rb_intern("link_texts"), rb_intern("title")};
+  VALUE values[2];
+  rb_get_kwargs(kwargs, keys, 0, 2, values);
+  VALUE pairs = checked_link_texts(given(values[0]));
+  VALUE title = checked_optional_string(given(values[1]));
   DocumentHandle* h = handle_of(self);
 
-  VALUE out = guarded_to_ruby([&] { return pdfua::apply(h->qpdf(), cpp_link_texts(pairs), cpp_optional_string(title)); },
-                              report_hash);
+  VALUE out = guarded_to_ruby(
+      [&] { return pdfua::apply(h->qpdf(), cpp_link_texts(pairs), cpp_optional_string(title)); }, report_hash);
   RB_GC_GUARD(pairs);
   RB_GC_GUARD(title);
   return out;
@@ -366,7 +372,7 @@ static VALUE report_hash(pdfua::Report const& report) {
 // ---- encryption ------------------------------------------------------------------------------
 
 static VALUE doc_encrypt(int argc, VALUE* argv, VALUE self) {
-  VALUE kwargs;
+  VALUE kwargs = Qnil;
   ID keys[12] = {rb_intern("user_pw"),       rb_intern("owner_pw"),          rb_intern("encryption_revision"),
                  rb_intern("allow_print"),   rb_intern("allow_modify"),      rb_intern("allow_extract"),
                  rb_intern("accessibility"), rb_intern("assemble"),          rb_intern("annotate_and_form"),

@@ -20,6 +20,28 @@ RSpec.describe QpdfRuby::Document do
     expect { described_class.new(fixture).apply_pdfua_fixes(title: 42) }.to raise_error(TypeError)
   end
 
+  it "rejects an unknown keyword to apply_pdfua_fixes" do
+    expect { described_class.new(fixture).apply_pdfua_fixes(tittle: "A") }
+      .to raise_error(ArgumentError, /unknown keyword: :tittle/)
+  end
+
+  it "rejects an unknown keyword to add_pdfua_identification" do
+    expect { described_class.new(fixture).add_pdfua_identification(tittle: "A") }
+      .to raise_error(ArgumentError, /unknown keyword: :tittle/)
+  end
+
+  it "rejects an unknown keyword to encrypt" do
+    expect { described_class.new(fixture).encrypt(user_password: "x") }
+      .to raise_error(ArgumentError, /unknown keyword: :user_password/)
+  end
+
+  it "leaves the caller's keyword hash as it was" do
+    options = { title: "A", link_texts: { "x" => "y" } }
+    described_class.new(fixture).apply_pdfua_fixes(**options)
+
+    expect(options).to eq(title: "A", link_texts: { "x" => "y" })
+  end
+
   it "stays usable after a rejected argument" do
     doc = described_class.new(fixture)
     begin
