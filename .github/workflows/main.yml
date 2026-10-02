@@ -32,7 +32,14 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
+      # The veraPDF examples in spec/acceptance/chromium_pdfua_spec.rb are the PDF/UA-1 conformance
+      # check; REQUIRE_VERAPDF=1 makes them fail instead of skip if this step left no verapdf behind.
+      # Java, curl and unzip come with the runner image.
+      - name: Install veraPDF
+        run: dirname "$(bin/install-verapdf.sh "$RUNNER_TEMP/verapdf")" >> "$GITHUB_PATH"
       - name: Run the default task
+        env:
+          REQUIRE_VERAPDF: "1"
         run: bundle exec rake
       - name: Build the gem
         run: bundle exec rake build
