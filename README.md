@@ -10,14 +10,15 @@ gem closes them without touching the content that is tagged:
 | PDF/UA-1 rule (veraPDF) | What Chromium does | What QpdfRuby does | Ruby API |
 | --- | --- | --- | --- |
 | 7.1-3 untagged content | backgrounds, borders, bars, `aria-hidden` and SVG decorations end up outside any marked content; it never writes `/Artifact` | wraps every painting operation outside marked content in `/Artifact BMC … EMC` (not a Form XObject that carries tagged content) | `doc.mark_untagged_content_as_artifacts` |
-| 7.18.1-2, 7.18.5-2 link descriptions | no `/Contents` on Link annotations | your text per URI, else the structure element's `/Alt`/`/ActualText`, else the URI (internal links: "Page N") | `doc.describe_links(texts = {})` |
-| 7.2-20 list items | `LI` holds `Lbl` and the content directly, never `LBody` | moves the content into an `LBody`, ParentTree entries updated | `doc.wrap_list_bodies` |
+| 7.18.1-2, 7.18.5-2 link descriptions | no `/Contents` on Link annotations | your text per URI, else the structure element's `/Alt`/`/ActualText`, else the URI (internal links: your text for `"#<destination>"`, else "Page N" - named destinations from `/Dests`, string destinations from the `/Names` tree) | `doc.describe_links(texts = {})` |
+| 7.2-20 list items | `LI` holds `Lbl` and the content directly, never `LBody` | moves the content into an `LBody`, ParentTree entries updated (a Form XObject's MCIDs in its own entry) | `doc.wrap_list_bodies` |
 | 7.1-5 non-standard types | PDF 2.0 types (`Strong`, `Em`, `Aside`, …) without a RoleMap | maps them to PDF 1.7 types in the RoleMap | `doc.map_nonstandard_roles` |
 | 7.3-1 figure alternative | an HTML `<figure>` becomes a `Figure` without alt text around the image's own `Figure` | retags that grouping `Figure` as `Div` | `doc.retag_grouping_figures` |
-| 7.1-8 metadata | no XMP `pdfuaid` identification | adds `pdfuaid:part 1` and `dc:title` (extends existing XMP), sets `DisplayDocTitle` | `doc.add_pdfua_identification(title: nil)` |
+| 7.1-8 metadata | no XMP `pdfuaid` identification | adds `pdfuaid:part 1` and `dc:title`, each only if missing (extends existing XMP, never replaces a title), sets `DisplayDocTitle` | `doc.add_pdfua_identification(title: nil)` |
 
 `doc.apply_pdfua_fixes(link_texts: {}, title: nil)` runs all of them and returns a report.
-Each step only adds what is missing, so running it twice changes nothing. Figures that have no
+Each step only adds what is missing, so running it twice changes nothing (the report's
+`identified` is true only when the identification step changed something). Figures that have no
 alternative text at all cannot be fixed by a tool - `doc.figures_without_alt` counts them.
 
 Also:
@@ -28,11 +29,14 @@ Also:
 | Add a layout `/BBox` to every `/Figure`¹ | `doc.ensure_bbox` |
 | Dump the structure tree as XML | `doc.show_structure` |
 | Inspect links, XMP, RoleMap | `doc.links`, `doc.metadata`, `doc.role_map` |
+| Count ParentTree entries that do not name their content's structure element (0 = consistent) | `doc.parent_tree_mismatches` |
 | Encrypt | `doc.encrypt(user_pw:, owner_pw:, …)` |
 | Read/write files or memory | `Document.new(path, password = nil)`, `Document.from_memory(bytes, password = nil)`, `#write(path)`, `#to_memory` |
 
-_¹The gem parses each page's content stream under the full transformation matrix and unites what
-each piece of marked content paints - images, Form XObjects, paths - per page and MCID._
+_¹The gem parses each page's content stream, and the content of the Form XObjects it draws, under
+the full transformation matrix and unites what each piece of marked content paints - images, Form
+XObjects, paths - per page, content stream and MCID (a marked-content reference's `/Stm` names the
+form whose MCIDs it means)._
 
 `#mark_paths_as_artifacts` is deprecated: it now does what `#mark_untagged_content_as_artifacts`
 does. Its old behaviour - wrapping rectangles anywhere, also inside tagged content - fixed few
@@ -102,9 +106,12 @@ cd qpdf_ruby
 bin/setup        # install gem + test deps
 autotest         # guard & RSpec
 ```
-* Bump **version.rb** → `bundle exec rake release` to push a new gem.
+* Bump **version.rb** → `bundle exec rake release` to push a new gem. It first runs
+  `rake release_credentials_check`, which shows where the push credential comes from: a set
+  `GEM_HOST_API_KEY` wins (as in RubyGems), else `gem.push_key` in the credentials file RubyGems uses.
 * `bundle exec rspec` runs the specs; the veraPDF examples run only where `verapdf` is on the
-  `PATH` (they are skipped otherwise).
+  `PATH` (`bin/install-verapdf.sh [DIR]` installs the pinned CLI; needs Java). They are skipped
+  otherwise - `REQUIRE_VERAPDF=1`, set in CI, makes them fail instead.
 
 ### Testing with local QPDF builds
 If you tinker with QPDF itself, point Bundler to your custom prefix:

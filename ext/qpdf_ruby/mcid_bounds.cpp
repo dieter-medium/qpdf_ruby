@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <set>
 #include <stack>
 #include <vector>
 
@@ -70,10 +71,16 @@ int mcid_of(QPDFObjectHandle properties, QPDFObjectHandle resources) {
   return -1;
 }
 
+constexpr int kMaxFormDepth = 16;
+
 class BoundsCollector : public QPDFObjectHandle::ParserCallbacks {
  public:
-  BoundsCollector(QPDFObjGen page, QPDFObjectHandle resources, McidBounds& out)
-      : page_(page), resources_(std::move(resources)), out_(out) {}
+  // `owner` is the stream the content's MCIDs are numbered in (the page, or a Form XObject);
+  // `ctm` the transformation it is drawn with; `active` the forms being walked (cycle guard).
+  BoundsCollector(QPDFObjGen page, QPDFObjGen owner, QPDFObjectHandle resources, McidBounds& out, Matrix ctm,
+                  std::set<QPDFObjGen>& active, int depth = 0)
+      : page_(page), owner_(owner), resources_(std::move(resources)), out_(out), ctm_(ctm), active_(active),
+        depth_(depth) {}
 
   void handleObject(QPDFObjectHandle obj, size_t, size_t) override {
     if (!obj.isOperator()) {
@@ -144,8 +151,19 @@ class BoundsCollector : public QPDFObjectHandle::ParserCallbacks {
       Matrix m = multiply(matrix_of(dict.getKey("/Matrix")).value_or(kIdentity), ctm_);
       extent.add_box(m, bbox.getArrayItem(0).getNumericValue(), bbox.getArrayItem(1).getNumericValue(),
                      bbox.getArrayItem(2).getNumericValue(), bbox.getArrayItem(3).getNumericValue());
+      walk_form(xobject, m);
     }
     if (!extent.empty()) record(extent);
+  }
+
+  // The form's own MCIDs, keyed by the form; its resources default to the ones it is drawn with.
+  void walk_form(QPDFObjectHandle form, Matrix const& m) {
+    if (depth_ >= kMaxFormDepth || !active_.insert(form.getObjGen()).second) return;
+    QPDFObjectHandle resources = form.getDict().getKey("/Resources");
+    BoundsCollector inner(page_, form.getObjGen(), resources.isDictionary() ? resources : resources_, out_, m,
+                          active_, depth_ + 1);
+    form.parseAsContents(&inner);
+    active_.erase(form.getObjGen());
   }
 
   void record(Extent const& extent) {
@@ -156,16 +174,19 @@ class BoundsCollector : public QPDFObjectHandle::ParserCallbacks {
       copy.pop();
     }
     if (mcid < 0) return;
-    McidKey key{page_, mcid};
+    McidKey key{page_, owner_, mcid};
     auto it = out_.find(key);
     out_[key] = it == out_.end() ? extent.box() : unite(it->second, extent.box());
   }
 
   QPDFObjGen page_;
+  QPDFObjGen owner_;
   QPDFObjectHandle resources_;
   McidBounds& out_;
   std::vector<QPDFObjectHandle> operands_;
-  Matrix ctm_ = kIdentity;
+  Matrix ctm_;
+  std::set<QPDFObjGen>& active_;
+  int depth_;
   std::stack<Matrix> ctm_stack_;
   std::stack<int> mcids_;
   Extent path_;
@@ -182,7 +203,9 @@ McidBounds find_mcid_bounds(QPDF& pdf) {
   for (QPDFObjectHandle page : pdf.getAllPages()) {
     QPDFPageObjectHelper helper(page);
     McidBounds on_page;
-    BoundsCollector collector(page.getObjGen(), helper.getAttribute("/Resources", false), on_page);
+    std::set<QPDFObjGen> active;
+    BoundsCollector collector(page.getObjGen(), page.getObjGen(), helper.getAttribute("/Resources", false), on_page,
+                              kIdentity, active);
     helper.parseContents(&collector);
 
     QPDFObjectHandle crop = helper.getCropBox();  // falls back to the MediaBox; never copies

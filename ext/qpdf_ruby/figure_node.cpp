@@ -14,16 +14,17 @@ QPDFObjectHandle page_of(QPDFObjectHandle elem) {
   return QPDFObjectHandle::newNull();
 }
 
-// Unites the bounds of every piece of marked content below `elem`: direct MCIDs (on the element's
-// page), marked-content references (on their own /Pg) and nested structure elements.
+// Unites the bounds of every piece of marked content below `elem`: direct MCIDs (in the content of
+// the element's page), marked-content references (in their /Stm if given, else their own /Pg's
+// content) and nested structure elements.
 void collect_bounds(QPDFObjectHandle elem, qpdf_ruby::McidBounds const& bounds, std::optional<qpdf_ruby::Box>& out,
                     std::set<QPDFObjGen>& seen, int depth = 0) {
   if (depth > 256 || (elem.isIndirect() && !seen.insert(elem.getObjGen()).second)) return;
   QPDFObjectHandle page = page_of(elem);
 
-  auto add = [&](QPDFObjectHandle on_page, int mcid) {
-    if (!on_page.isDictionary()) return;
-    auto it = bounds.find({on_page.getObjGen(), mcid});
+  auto add = [&](QPDFObjectHandle on_page, QPDFObjectHandle owner, int mcid) {
+    if (!on_page.isDictionary() || !(owner.isDictionary() || owner.isStream())) return;
+    auto it = bounds.find({on_page.getObjGen(), owner.getObjGen(), mcid});
     if (it == bounds.end()) return;
     out = out ? qpdf_ruby::unite(*out, it->second) : it->second;
   };
@@ -38,9 +39,13 @@ void collect_bounds(QPDFObjectHandle elem, qpdf_ruby::McidBounds const& bounds, 
 
   for (auto& kid : list) {
     if (kid.isInteger()) {
-      add(page, kid.getIntValue());
+      add(page, page, kid.getIntValue());
     } else if (kid.isDictionary() && kid.getKey("/Type").isNameAndEquals("/MCR") && kid.getKey("/MCID").isInteger()) {
-      add(kid.getKey("/Pg").isDictionary() ? kid.getKey("/Pg") : page, kid.getKey("/MCID").getIntValue());
+      QPDFObjectHandle on_page = kid.getKey("/Pg").isDictionary() ? kid.getKey("/Pg") : page;
+      // A /Stm that is not a stream names nothing we can look up: no bounds rather than the page's.
+      QPDFObjectHandle owner = kid.hasKey("/Stm") ? kid.getKey("/Stm") : on_page;
+      if (kid.hasKey("/Stm") && !owner.isStream()) continue;
+      add(on_page, owner, kid.getKey("/MCID").getIntValue());
     } else if (kid.isDictionary() && kid.hasKey("/S")) {
       collect_bounds(kid, bounds, out, seen, depth + 1);
     }

@@ -188,6 +188,11 @@ static VALUE doc_wrap_list_bodies(VALUE self) {
   return LONG2NUM(guarded([&] { return pdfua::wrap_list_bodies(h->qpdf()); }));
 }
 
+static VALUE doc_parent_tree_mismatches(VALUE self) {
+  DocumentHandle* h = handle_of(self);
+  return LONG2NUM(guarded([&] { return pdfua::count_parent_tree_mismatches(h->qpdf()); }));
+}
+
 static VALUE doc_map_nonstandard_roles(VALUE self) {
   DocumentHandle* h = handle_of(self);
   return LONG2NUM(guarded([&] { return pdfua::map_nonstandard_roles(h->qpdf()); }));
@@ -355,6 +360,7 @@ extern "C" __attribute__((visibility("default"))) void Init_qpdf_ruby(void) {
   rb_define_method(rb_cDocument, "untagged_content", RUBY_METHOD_FUNC(doc_untagged_content), 0);
   rb_define_method(rb_cDocument, "describe_links", RUBY_METHOD_FUNC(doc_describe_links), -1);
   rb_define_method(rb_cDocument, "wrap_list_bodies", RUBY_METHOD_FUNC(doc_wrap_list_bodies), 0);
+  rb_define_method(rb_cDocument, "parent_tree_mismatches", RUBY_METHOD_FUNC(doc_parent_tree_mismatches), 0);
   rb_define_method(rb_cDocument, "map_nonstandard_roles", RUBY_METHOD_FUNC(doc_map_nonstandard_roles), 0);
   rb_define_method(rb_cDocument, "retag_grouping_figures", RUBY_METHOD_FUNC(doc_retag_grouping_figures), 0);
   rb_define_method(rb_cDocument, "figures_without_alt", RUBY_METHOD_FUNC(doc_figures_without_alt), 0);

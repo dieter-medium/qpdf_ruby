@@ -38,6 +38,10 @@ RSpec.describe "Making Chromium's tagged PDFs PDF/UA-1 conformant" do
         expect(fixed(name).links.map { |link| link[:contents] }).to all(be_a(String).and(satisfy { |text| !text.empty? }))
       end
 
+      it "keeps every ParentTree entry pointing at the element that holds the content" do
+        expect(fixed(name).parent_tree_mismatches).to eq(0)
+      end
+
       it "gives list items only labels and bodies" do
         kids = structure(fixed(name)).xpath("//LI/*").map(&:name).uniq
 
@@ -110,12 +114,19 @@ RSpec.describe "Making Chromium's tagged PDFs PDF/UA-1 conformant" do
     end
   end
 
+  # Skipped where veraPDF is not installed (bin/install-verapdf.sh) - unless REQUIRE_VERAPDF=1, as
+  # in CI, where a missing veraPDF must fail the run rather than quietly drop the conformance check.
   describe "veraPDF", :verapdf do
+    def without_verapdf
+      message = "veraPDF is not installed (bin/install-verapdf.sh)"
+      ENV["REQUIRE_VERAPDF"] == "1" ? raise(message) : skip(message)
+    end
+
     before do
       _, status = Open3.capture2e("verapdf", "--version")
-      skip "veraPDF is not installed" unless status.success?
+      without_verapdf unless status.success?
     rescue Errno::ENOENT
-      skip "veraPDF is not installed"
+      without_verapdf
     end
 
     %w[chromium_print_cases.pdf modern_cv.pdf].each do |name|

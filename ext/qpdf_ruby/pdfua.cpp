@@ -1,6 +1,7 @@
 #include "pdfua.hpp"
 
 #include <qpdf/Pl_Buffer.hh>
+#include <qpdf/QPDFNameTreeObjectHelper.hh>
 #include <qpdf/QPDFNumberTreeObjectHelper.hh>
 #include <qpdf/QPDFObjectHandle.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
@@ -8,6 +9,7 @@
 
 #include <functional>
 #include <memory>
+#include <regex>
 #include <set>
 #include <vector>
 
@@ -19,6 +21,11 @@ const std::set<std::string> kPathConstruction = {"m", "l", "c", "v", "y", "h", "
 const std::set<std::string> kClip = {"W", "W*"};
 const std::set<std::string> kPathEnd = {"S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n"};
 const std::set<std::string> kTextShow = {"Tj", "TJ", "'", "\""};
+// Graphics state and colour operators producers emit between a path's construction and its
+// painting operator (Chromium: `... l 2 w S`). They change no geometry, so they stay part of the
+// path object instead of ending it.
+const std::set<std::string> kPathState = {"w",  "J",  "j", "M",  "d",  "ri", "i",  "gs", "CS", "cs",
+                                          "SC", "SCN", "sc", "scn", "G", "g",  "RG", "rg", "K",  "k"};
 
 // True if a Form XObject (or anything it draws) carries marked content of its own.
 bool form_has_marked_content(QPDFObjectHandle xobject, std::set<QPDFObjGen>& seen) {
@@ -88,6 +95,11 @@ class UntaggedFilter : public QPDFObjectHandle::TokenFilter {
       take_pending();
       object_.push_back(token);
       in_path_ = true;
+      return;
+    }
+    if (in_path_ && kPathState.count(op)) {
+      take_pending();
+      object_.push_back(token);
       return;
     }
     if (in_path_ && kPathEnd.count(op)) {
@@ -252,6 +264,29 @@ void each_struct_elem(QPDF& pdf, std::function<void(QPDFObjectHandle)> const& fn
   if (tree.isDictionary()) each_struct_elem(tree, fn, seen);
 }
 
+// The content stream an MCID is numbered in: a marked-content reference's /Stm (a Form XObject),
+// else its /Pg, else the page of the structure element holding it. Null when /Stm is not a stream.
+QPDFObjectHandle mcid_owner(QPDFObjectHandle kid, QPDFObjectHandle page) {
+  if (kid.isDictionary() && kid.hasKey("/Stm")) {
+    QPDFObjectHandle stm = kid.getKey("/Stm");
+    return stm.isStream() ? stm : QPDFObjectHandle::newNull();
+  }
+  if (kid.isDictionary() && kid.getKey("/Pg").isDictionary()) return kid.getKey("/Pg");
+  return page;
+}
+
+// The ParentTree array of an MCID owner (page or Form XObject), found through its /StructParents.
+QPDFObjectHandle parent_tree_entries(QPDF& pdf, QPDFObjectHandle parent_tree, QPDFObjectHandle owner) {
+  QPDFObjectHandle dict = owner.isStream() ? owner.getDict() : owner;
+  QPDFObjectHandle key = dict.isDictionary() ? dict.getKey("/StructParents") : QPDFObjectHandle::newNull();
+  QPDFObjectHandle entries;
+  if (!parent_tree.isDictionary() || !key.isInteger() ||
+      !QPDFNumberTreeObjectHelper(parent_tree, pdf).findObject(key.getIntValue(), entries) || !entries.isArray()) {
+    return QPDFObjectHandle::newNull();
+  }
+  return entries;
+}
+
 std::string xml_escape(std::string const& s) {
   std::string out;
   for (char c : s) {
@@ -282,14 +317,24 @@ std::pair<std::string, int> link_destination(QPDF& pdf, QPDFObjectHandle annot) 
     dest = action.getKey("/D");
   }
 
+  // A name is looked up in the catalog's /Dests dictionary (PDF 1.1), a string in the /Names /Dests
+  // name tree (PDF 1.2+, possibly split into /Kids). Either value is the array or a dict with /D.
   std::string name;
-  if (dest.isName()) name = dest.getName().substr(1);
-  if (dest.isString()) name = dest.getUTF8Value();
-  if (!name.empty()) {
-    QPDFObjectHandle named = pdf.getRoot().getKey("/Dests").getKey("/" + name);
-    if (named.isDictionary()) named = named.getKey("/D");
-    if (named.isArray()) dest = named;
+  QPDFObjectHandle named;
+  if (dest.isName()) {
+    name = dest.getName().substr(1);
+    QPDFObjectHandle dests = pdf.getRoot().getKey("/Dests");
+    if (dests.isDictionary()) named = dests.getKey(dest.getName());
+  } else if (dest.isString()) {
+    name = dest.getUTF8Value();
+    QPDFObjectHandle names = pdf.getRoot().getKey("/Names");
+    QPDFObjectHandle tree = names.isDictionary() ? names.getKey("/Dests") : QPDFObjectHandle::newNull();
+    if (tree.isDictionary() && !QPDFNameTreeObjectHelper(tree, pdf).findObject(name, named)) {
+      named = QPDFObjectHandle::newNull();
+    }
   }
+  if (named.isDictionary()) named = named.getKey("/D");
+  if (named.isArray()) dest = named;
 
   int page_number = 0;
   if (dest.isArray() && dest.getArrayNItems() > 0) {
@@ -402,18 +447,17 @@ long wrap_list_bodies(QPDF& pdf) {
         });
         continue;
       }
-      QPDFObjectHandle mcid = kid.isInteger() ? kid : kid.getKey("/MCID");
-      QPDFObjectHandle kid_page = kid.isDictionary() && kid.getKey("/Pg").isDictionary() ? kid.getKey("/Pg") : page;
-      QPDFObjectHandle struct_parents =
-          kid_page.isDictionary() ? kid_page.getKey("/StructParents") : QPDFObjectHandle::newNull();
-      QPDFObjectHandle entries;
-      if (!mcid.isInteger() || !struct_parents.isInteger() ||
-          !QPDFNumberTreeObjectHelper(parent_tree, pdf).findObject(struct_parents.getIntValue(), entries) ||
-          !entries.isArray() || mcid.getIntValue() >= entries.getArrayNItems()) {
+      // An MCID is numbered in its own content stream: a Form XObject's (/Stm) has its own
+      // ParentTree entry, so the page's must not be touched for it.
+      QPDFObjectHandle mcid = kid.isInteger() ? kid : kid.isDictionary() ? kid.getKey("/MCID") : QPDFObjectHandle::newNull();
+      QPDFObjectHandle entries = parent_tree_entries(pdf, parent_tree, mcid_owner(kid, page));
+      if (!mcid.isInteger() || !entries.isArray() || mcid.getIntValue() < 0 ||
+          mcid.getIntValue() >= entries.getArrayNItems()) {
         ok = false;
         break;
       }
-      reparent.push_back([entries, mcid, lbody]() mutable { entries.setArrayItem(mcid.getIntValue(), lbody); });
+      int index = mcid.getIntValue();
+      reparent.push_back([entries, index, lbody]() mutable { entries.setArrayItem(index, lbody); });
     }
     if (!ok) continue;  // leave an LI we cannot rewrite consistently as it is
 
@@ -424,6 +468,39 @@ long wrap_list_bodies(QPDF& pdf) {
     ++created;
   }
   return created;
+}
+
+long count_parent_tree_mismatches(QPDF& pdf) {
+  QPDFObjectHandle tree = struct_tree(pdf);
+  if (!tree.isDictionary()) return 0;
+  QPDFObjectHandle parent_tree = tree.getKey("/ParentTree");
+  long mismatches = 0;
+
+  each_struct_elem(pdf, [&](QPDFObjectHandle elem) {
+    QPDFObjectHandle page = page_of(elem);
+    for (auto& kid : kids_of(elem)) {
+      if (kid.isDictionary() && kid.hasKey("/S")) continue;
+      QPDFObjectHandle entry;
+      if (kid.isDictionary() && kid.getKey("/Type").isNameAndEquals("/OBJR")) {
+        QPDFObjectHandle object = kid.getKey("/Obj");
+        QPDFObjectHandle key = object.isDictionary() ? object.getKey("/StructParent") : QPDFObjectHandle::newNull();
+        if (!parent_tree.isDictionary() || !key.isInteger() ||
+            !QPDFNumberTreeObjectHelper(parent_tree, pdf).findObject(key.getIntValue(), entry)) {
+          entry = QPDFObjectHandle::newNull();
+        }
+      } else {
+        QPDFObjectHandle mcid = kid.isInteger() ? kid : kid.isDictionary() ? kid.getKey("/MCID") : QPDFObjectHandle::newNull();
+        if (!mcid.isInteger()) continue;
+        QPDFObjectHandle entries = parent_tree_entries(pdf, parent_tree, mcid_owner(kid, page));
+        long long index = mcid.getIntValue();
+        entry = entries.isArray() && index >= 0 && index < entries.getArrayNItems()
+                    ? entries.getArrayItem(static_cast<int>(index))
+                    : QPDFObjectHandle::newNull();
+      }
+      if (!entry.isIndirect() || entry.getObjGen() != elem.getObjGen()) ++mismatches;
+    }
+  });
+  return mismatches;
 }
 
 long map_nonstandard_roles(QPDF& pdf) {
@@ -502,22 +579,62 @@ long count_figures_without_alt(QPDF& pdf) {
   return count;
 }
 
+namespace {
+
+constexpr char kPdfuaNs[] = "http://www.aiim.org/pdfua/ns/id/";
+constexpr char kDcNs[] = "http://purl.org/dc/elements/1.1/";
+
+// Every prefix the packet binds to `uri` (xmlns:prefix="uri"), wherever it is declared.
+std::vector<std::string> xmlns_prefixes(std::string const& xmp, std::string const& uri) {
+  static const std::regex declaration(R"re(xmlns:([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'))re");
+  std::vector<std::string> prefixes;
+  for (std::sregex_iterator it(xmp.begin(), xmp.end(), declaration), end; it != end; ++it) {
+    if ((*it)[2].str() == uri || (*it)[3].str() == uri) prefixes.push_back((*it)[1].str());
+  }
+  return prefixes;
+}
+
+bool is_xml_space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+
+// True if the packet carries property `local` of namespace `uri`, as an element (<p:local ...>) or
+// in the attribute shorthand XMP allows on rdf:Description (p:local="...") - under any prefix the
+// packet binds to `uri`. Not a full XML parser: a match inside a comment or CDATA counts too.
+bool has_property(std::string const& xmp, std::string const& uri, std::string const& local) {
+  for (auto const& prefix : xmlns_prefixes(xmp, uri)) {
+    std::string const name = prefix + ":" + local;
+    for (size_t at = xmp.find(name); at != std::string::npos; at = xmp.find(name, at + 1)) {
+      size_t after = at + name.size();
+      char next = after < xmp.size() ? xmp[after] : '\0';
+      bool element = at > 0 && xmp[at - 1] == '<' && (is_xml_space(next) || next == '>' || next == '/');
+      size_t equals = after;
+      while (equals < xmp.size() && is_xml_space(xmp[equals])) ++equals;
+      bool attribute = at > 0 && is_xml_space(xmp[at - 1]) && equals < xmp.size() && xmp[equals] == '=';
+      if (element || attribute) return true;
+    }
+  }
+  return false;
+}
+
+// Sets a boolean key unless it already has that value; true if it changed anything.
+bool ensure_true(QPDFObjectHandle dict, std::string const& key) {
+  QPDFObjectHandle value = dict.getKey(key);
+  if (value.isBool() && value.getBoolValue()) return false;
+  dict.replaceKey(key, QPDFObjectHandle::newBool(true));
+  return true;
+}
+
+// The catalog's dictionary under `key`, created if missing.
+QPDFObjectHandle catalog_dict(QPDFObjectHandle root, std::string const& key) {
+  if (!root.getKey(key).isDictionary()) root.replaceKey(key, QPDFObjectHandle::newDictionary());
+  return root.getKey(key);
+}
+
+}  // namespace
+
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title) {
   QPDFObjectHandle root = pdf.getRoot();
-
-  QPDFObjectHandle prefs = root.getKey("/ViewerPreferences");
-  if (!prefs.isDictionary()) {
-    root.replaceKey("/ViewerPreferences", QPDFObjectHandle::newDictionary());
-    prefs = root.getKey("/ViewerPreferences");
-  }
-  prefs.replaceKey("/DisplayDocTitle", QPDFObjectHandle::newBool(true));
-
-  QPDFObjectHandle mark_info = root.getKey("/MarkInfo");
-  if (!mark_info.isDictionary()) {
-    root.replaceKey("/MarkInfo", QPDFObjectHandle::newDictionary());
-    mark_info = root.getKey("/MarkInfo");
-  }
-  mark_info.replaceKey("/Marked", QPDFObjectHandle::newBool(true));
+  bool changed = ensure_true(catalog_dict(root, "/ViewerPreferences"), "/DisplayDocTitle");
+  changed = ensure_true(catalog_dict(root, "/MarkInfo"), "/Marked") || changed;
 
   std::string doc_title;
   QPDFObjectHandle info = pdf.getTrailer().getKey("/Info");
@@ -527,26 +644,36 @@ bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title
       info = pdf.makeIndirectObject(QPDFObjectHandle::newDictionary());
       pdf.getTrailer().replaceKey("/Info", info);
     }
-    info.replaceKey("/Title", QPDFObjectHandle::newUnicodeString(doc_title));
+    QPDFObjectHandle current = info.getKey("/Title");
+    if (!current.isString() || current.getUTF8Value() != doc_title) {
+      info.replaceKey("/Title", QPDFObjectHandle::newUnicodeString(doc_title));
+      changed = true;
+    }
   } else if (info.isDictionary() && info.getKey("/Title").isString()) {
     doc_title = info.getKey("/Title").getUTF8Value();
   }
 
-  static const std::string ns = "xmlns:pdfuaid=\"http://www.aiim.org/pdfua/ns/id/\"";
-  std::string title_xml =
+  std::string const part_xml = "<pdfuaid:part>1</pdfuaid:part>";
+  std::string const title_xml =
       "<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">" + xml_escape(doc_title) + "</rdf:li></rdf:Alt></dc:title>";
+  std::string const part_ns = std::string(" xmlns:pdfuaid=\"") + kPdfuaNs + "\"";
+  std::string const dc_ns = std::string(" xmlns:dc=\"") + kDcNs + "\"";
 
+  // An existing packet keeps everything it has; only what is missing goes into one new
+  // rdf:Description, the identification and the title each checked on their own.
   QPDFObjectHandle metadata = root.getKey("/Metadata");
   if (metadata.isStream()) {
     auto data = metadata.getStreamData(qpdf_dl_generalized);
     std::string xmp(reinterpret_cast<char const*>(data->getBuffer()), data->getSize());
-    if (xmp.find("pdfuaid:part") != std::string::npos) return false;
+    bool add_part = !has_property(xmp, kPdfuaNs, "part");
+    bool add_title = !doc_title.empty() && !has_property(xmp, kDcNs, "title");
+    if (!add_part && !add_title) return changed;
+
     auto end = xmp.find("</rdf:RDF>");
     if (end == std::string::npos) throw std::runtime_error("existing XMP metadata has no rdf:RDF element");
-    std::string description = "<rdf:Description rdf:about=\"\" " + ns +
-                              " xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><pdfuaid:part>1</pdfuaid:part>" +
-                              (xmp.find("dc:title") == std::string::npos && !doc_title.empty() ? title_xml : "") +
-                              "</rdf:Description>\n";
+    std::string description = "<rdf:Description rdf:about=\"\"" + (add_part ? part_ns : "") +
+                              (add_title ? dc_ns : "") + ">" + (add_part ? part_xml : "") +
+                              (add_title ? title_xml : "") + "</rdf:Description>\n";
     xmp.insert(end, description);
     metadata.replaceStreamData(xmp, QPDFObjectHandle::newNull(), QPDFObjectHandle::newNull());
     return true;
@@ -555,8 +682,8 @@ bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title
   std::string xmp =
       "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
       "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n"
-      "<rdf:Description rdf:about=\"\" " + ns + " xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
-      "<pdfuaid:part>1</pdfuaid:part>\n" + (doc_title.empty() ? "" : title_xml + "\n") +
+      "<rdf:Description rdf:about=\"\"" + part_ns + dc_ns + ">\n" + part_xml + "\n" +
+      (doc_title.empty() ? "" : title_xml + "\n") +
       "</rdf:Description></rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
   QPDFObjectHandle stream = QPDFObjectHandle::newStream(&pdf, xmp);
   stream.getDict().replaceKey("/Type", QPDFObjectHandle::newName("/Metadata"));

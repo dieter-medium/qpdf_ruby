@@ -35,13 +35,19 @@ UntaggedCounts count_untagged_content(QPDF& pdf);
 // Gives each Link annotation without /Contents a description (7.18.1-2, 7.18.5-2): the text given
 // for its URI in `texts`, else its structure element's /Alt or /ActualText, else the URI itself
 // (a mailto: address without the scheme). An internal link uses the text given for "#<name>" of
-// its named destination, else "Page N". Returns how many were described.
+// its named destination (a name in the catalog's /Dests, a string in the /Names /Dests name tree),
+// else "Page N". Returns how many were described.
 long describe_links(QPDF& pdf, std::map<std::string, std::string> const& texts);
 
 // Moves an LI's content other than Lbl/LBody into a new LBody (7.2-20), structure elements as well
 // as marked-content references, with the ParentTree entries of the moved content updated.
 // Returns how many LBody elements were created.
 long wrap_list_bodies(QPDF& pdf);
+
+// Marked content and annotations whose ParentTree entry does not name the structure element that
+// holds them - MCIDs looked up in the stream they are numbered in (a reference's /Stm, else the
+// page), annotations through their /StructParent. Read-only; 0 for a consistent tree.
+long count_parent_tree_mismatches(QPDF& pdf);
 
 // Maps PDF 2.0 structure types Chromium emits (Aside, Strong, Em, ...) to PDF 1.7 standard types
 // in the RoleMap, unless the RoleMap already maps them (7.1-5). Returns how many were added.
@@ -56,10 +62,11 @@ long retag_grouping_figures(QPDF& pdf);
 // Figures that still have neither /Alt nor /ActualText - only a person can write those (7.3-1).
 long count_figures_without_alt(QPDF& pdf);
 
-// Identifies the file as PDF/UA-1 in its XMP metadata (7.1-8) - extending an existing metadata
-// stream, or writing a new one with dc:title - and sets DisplayDocTitle and Marked. The title is
-// `title` if given, else the document information dictionary's /Title. Returns false if the file
-// was already identified.
+// Identifies the file as PDF/UA-1 in its XMP metadata (7.1-8) and sets DisplayDocTitle and
+// Marked. An existing metadata stream keeps everything it has: pdfuaid:part and dc:title are each
+// added only if missing (looked up by namespace, element or attribute form); an existing dc:title is
+// never replaced. Without a stream, a new one is written. The title is `title` if given (it also
+// becomes the information dictionary's /Title), else that /Title. Returns true if anything changed.
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title);
 
 struct Report {
