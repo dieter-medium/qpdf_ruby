@@ -287,6 +287,12 @@ QPDFObjectHandle mcid_owner(QPDFObjectHandle kid, QPDFObjectHandle page) {
   return page;
 }
 
+// The MCID a structure element's kid names: the kid itself, or a marked-content reference's /MCID.
+QPDFObjectHandle mcid_value(QPDFObjectHandle kid) {
+  if (kid.isInteger()) return kid;
+  return kid.isDictionary() ? kid.getKey("/MCID") : QPDFObjectHandle::newNull();
+}
+
 // The ParentTree array of an MCID owner (page or Form XObject), found through its /StructParents.
 QPDFObjectHandle parent_tree_entries(QPDF& pdf, QPDFObjectHandle parent_tree, QPDFObjectHandle owner) {
   QPDFObjectHandle dict = owner.isStream() ? owner.getDict() : owner;
@@ -462,7 +468,7 @@ long wrap_list_bodies(QPDF& pdf) {
       }
       // An MCID is numbered in its own content stream: a Form XObject's (/Stm) has its own
       // ParentTree entry, so the page's must not be touched for it.
-      QPDFObjectHandle mcid = kid.isInteger() ? kid : kid.isDictionary() ? kid.getKey("/MCID") : QPDFObjectHandle::newNull();
+      QPDFObjectHandle mcid = mcid_value(kid);
       QPDFObjectHandle entries = parent_tree_entries(pdf, parent_tree, mcid_owner(kid, page));
       if (!mcid.isInteger() || !entries.isArray() || mcid.getIntValue() < 0 ||
           mcid.getIntValue() >= entries.getArrayNItems()) {
@@ -502,7 +508,7 @@ long count_parent_tree_mismatches(QPDF& pdf) {
           entry = QPDFObjectHandle::newNull();
         }
       } else {
-        QPDFObjectHandle mcid = kid.isInteger() ? kid : kid.isDictionary() ? kid.getKey("/MCID") : QPDFObjectHandle::newNull();
+        QPDFObjectHandle mcid = mcid_value(kid);
         if (!mcid.isInteger()) continue;
         QPDFObjectHandle entries = parent_tree_entries(pdf, parent_tree, mcid_owner(kid, page));
         long long index = mcid.getIntValue();

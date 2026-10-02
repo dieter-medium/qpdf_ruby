@@ -23,9 +23,9 @@ using McidBounds = std::map<McidKey, Box>;
 // /Matrix), filled paths and stroked paths with their line width, caps and joins (stroke_bounds.hpp),
 // under the full CTM (cm concatenates, q/Q save and restore the whole graphics state), clipped
 // to the page's crop box (content wholly outside it gets no entry). Text adds nothing: its extent
-// needs font metrics, so a Figure made only of text falls back to the crop box. Content belongs to the innermost enclosing MCID of its own stream; a Form
-// XObject's content is also walked, under its /Matrix and the CTM it is drawn with, for the MCIDs
-// numbered in that form.
+// needs font metrics, so a Figure made only of text falls back to the crop box. Content belongs to
+// the innermost enclosing MCID of its own stream; a Form XObject's content is also walked, under its
+// /Matrix and the CTM it is drawn with, for the MCIDs numbered in that form.
 McidBounds find_mcid_bounds(QPDF& pdf);
 
 Box unite(Box const& a, Box const& b);
