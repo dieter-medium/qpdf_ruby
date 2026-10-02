@@ -10,10 +10,13 @@ load File.expand_path("../../tasks/release_credentials_check.rake", __dir__)
 RSpec.describe ReleaseCredentialsCheck do
   let(:token) { "rubygems_0123456789abcdef" }
   let(:env_with_token) { { "GEM_HOST_API_KEY" => token } }
-  let(:missing_file) { File.join(Dir.mktmpdir, "credentials") }
+  let(:dir) { Dir.mktmpdir }
+  let(:missing_file) { File.join(dir, "credentials") }
+
+  after { FileUtils.remove_entry(dir) }
 
   def credentials_file(content)
-    File.join(Dir.mktmpdir, "credentials").tap do |path|
+    File.join(dir, "credentials").tap do |path|
       File.write(path, content)
       File.chmod(0o600, path)
     end

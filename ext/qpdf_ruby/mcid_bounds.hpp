@@ -21,7 +21,8 @@ using McidBounds = std::map<McidKey, Box>;
 
 // The area each piece of marked content paints: images, Form XObjects (their /BBox under their
 // /Matrix) and painted paths, under the full CTM (cm concatenates, q/Q save and restore), clipped
-// to the page's crop box. Content belongs to the innermost enclosing MCID of its own stream; a Form
+// to the page's crop box (content wholly outside it gets no entry). Text adds nothing: its extent
+// needs font metrics, so a Figure made only of text falls back to the crop box. Content belongs to the innermost enclosing MCID of its own stream; a Form
 // XObject's content is also walked, under its /Matrix and the CTM it is drawn with, for the MCIDs
 // numbered in that form.
 McidBounds find_mcid_bounds(QPDF& pdf);

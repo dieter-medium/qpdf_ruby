@@ -19,9 +19,9 @@ void PDFStructWalker::ensureLayoutBBox(QPDFObjectHandle const& node) {
 void PDFStructWalker::buildPageObjectMap(QPDF& pdf) {
   pageObjToNumMap.clear();
   std::vector<QPDFObjectHandle> pages = pdf.getAllPages();
-  for (int i = 0; i < pages.size(); ++i) {
+  for (size_t i = 0; i < pages.size(); ++i) {
     // Map the page's object ID to its 1-based page number
-    pageObjToNumMap[pages.at(i).getObjGen()] = i + 1;
+    pageObjToNumMap[pages.at(i).getObjGen()] = static_cast<int>(i) + 1;
   }
 }
 

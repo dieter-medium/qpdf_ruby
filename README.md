@@ -12,14 +12,31 @@ gem closes them without touching the content that is tagged:
 | 7.1-3 untagged content | backgrounds, borders, bars, `aria-hidden` and SVG decorations end up outside any marked content; it never writes `/Artifact` | wraps every painting operation outside marked content in `/Artifact BMC … EMC` (not a Form XObject that carries tagged content) | `doc.mark_untagged_content_as_artifacts` |
 | 7.18.1-2, 7.18.5-2 link descriptions | no `/Contents` on Link annotations | your text per URI, else the structure element's `/Alt`/`/ActualText`, else the URI (internal links: your text for `"#<destination>"`, else "Page N" - named destinations from `/Dests`, string destinations from the `/Names` tree) | `doc.describe_links(texts = {})` |
 | 7.2-20 list items | `LI` holds `Lbl` and the content directly, never `LBody` | moves the content into an `LBody`, ParentTree entries updated (a Form XObject's MCIDs in its own entry) | `doc.wrap_list_bodies` |
-| 7.1-5 non-standard types | PDF 2.0 types (`Strong`, `Em`, `Aside`, …) without a RoleMap | maps them to PDF 1.7 types in the RoleMap | `doc.map_nonstandard_roles` |
+| 7.1-5 non-standard types | PDF 2.0 types (`Strong`, `Em`, `Aside`, …) without a RoleMap | maps them to PDF 1.7 types in the RoleMap (table below) | `doc.map_nonstandard_roles` |
 | 7.3-1 figure alternative | an HTML `<figure>` becomes a `Figure` without alt text around the image's own `Figure` | retags that grouping `Figure` as `Div` | `doc.retag_grouping_figures` |
-| 7.1-8 metadata | no XMP `pdfuaid` identification | adds `pdfuaid:part 1` and `dc:title`, each only if missing (extends existing XMP, never replaces a title), sets `DisplayDocTitle` | `doc.add_pdfua_identification(title: nil)` |
+| 7.1-8 metadata | no XMP `pdfuaid` identification | adds `pdfuaid:part 1` and `dc:title`, each only if missing (extends existing XMP, never replaces a title), sets `DisplayDocTitle` and `Marked` - the identification only for a file with a structure tree | `doc.add_pdfua_identification(title: nil)` |
 
 `doc.apply_pdfua_fixes(link_texts: {}, title: nil)` runs all of them and returns a report.
 Each step only adds what is missing, so running it twice changes nothing (the report's
-`identified` is true only when the identification step changed something). Figures that have no
-alternative text at all cannot be fixed by a tool - `doc.figures_without_alt` counts them.
+`identified` is true only when the identification step changed something). When the file cannot
+be identified - it has no structure tree, or its existing XMP has no RDF element the gem can find -
+the other steps still run and `unidentified_reason` says why; it is `nil` otherwise. Figures that
+have no alternative text at all cannot be fixed by a tool - `doc.figures_without_alt` counts them.
+
+The RoleMap entries `map_nonstandard_roles` adds, each only for a type the file uses and does not
+map yet. Some are lossy - an assistive technology reads `Title` as a paragraph, `Aside` as a
+section:
+
+| PDF 2.0 type | mapped to |
+| --- | --- |
+| `Aside` | `Sect` |
+| `DocumentFragment` | `Part` |
+| `Em`, `Strong`, `Sub` | `Span` |
+| `FENote` | `Note` |
+| `Title` | `P` |
+
+Untagged content is looked for in page content and the Form XObjects it draws - not in annotation
+appearance streams, tiling patterns or Type 3 glyph procedures, which Chromium does not emit.
 
 Also:
 
@@ -36,7 +53,8 @@ Also:
 _¹The gem parses each page's content stream, and the content of the Form XObjects it draws, under
 the full transformation matrix and unites what each piece of marked content paints - images, Form
 XObjects, paths - per page, content stream and MCID (a marked-content reference's `/Stm` names the
-form whose MCIDs it means)._
+form whose MCIDs it means). Text adds nothing (its extent needs font metrics), and content outside
+the crop box is ignored; a Figure with no other content gets the crop box._
 
 `#mark_paths_as_artifacts` is deprecated: it now does what `#mark_untagged_content_as_artifacts`
 does. Its old behaviour - wrapping rectangles anywhere, also inside tagged content - fixed few
@@ -91,7 +109,7 @@ report = pdf.apply_pdfua_fixes(
   title: "Curriculum vitae - Jana Example"                    # optional, else the PDF's /Title
 )
 # => { artifacts: { paths: 75, texts: 101, …, total: 176 }, links: 2, list_bodies: 34, roles: 0,
-#      figure_groups: 0, figures_without_alt: 0, identified: true }
+#      figure_groups: 0, figures_without_alt: 0, identified: true, unidentified_reason: nil }
 
 pdf.ensure_bbox                     # layout BBoxes for figures (PAC 2024 asks for them)
 pdf.write("accessible.pdf")         # or pdf.to_memory

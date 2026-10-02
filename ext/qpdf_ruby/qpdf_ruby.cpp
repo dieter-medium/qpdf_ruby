@@ -40,46 +40,101 @@ static DocumentHandle* handle_of(VALUE self) {
 
 static VALUE doc_alloc(VALUE klass) { return TypedData_Wrap_Struct(klass, &document_type, nullptr); }
 
-static std::string string_arg(VALUE value) {
+// ---- arguments and results (see the rules in ruby_guard.hpp) ------------------------------------
+
+// Ruby side, before any C++ object exists: these may raise.
+static VALUE checked_string(VALUE value) {
   Check_Type(value, T_STRING);
-  return std::string(RSTRING_PTR(value), RSTRING_LEN(value));
+  return value;
+}
+
+static VALUE checked_optional_string(VALUE value) { return NIL_P(value) ? Qnil : checked_string(value); }
+
+static int collect_link_text(VALUE key, VALUE value, VALUE pairs) {
+  rb_ary_push(pairs, rb_assoc_new(rb_obj_as_string(key), rb_obj_as_string(value)));
+  return ST_CONTINUE;
+}
+
+// The link texts hash as an array of [String, String] pairs (keys and values through #to_s), or nil.
+static VALUE checked_link_texts(VALUE hash) {
+  if (NIL_P(hash)) return Qnil;
+  Check_Type(hash, T_HASH);
+  VALUE pairs = rb_ary_new();
+  rb_hash_foreach(hash, collect_link_text, pairs);
+  return pairs;
+}
+
+// C++ side, inside guarded only: reading checked values never raises.
+static std::string cpp_string(VALUE str) { return std::string(RSTRING_PTR(str), RSTRING_LEN(str)); }
+
+static std::optional<std::string> cpp_optional_string(VALUE str) {
+  if (NIL_P(str)) return std::nullopt;
+  return cpp_string(str);
+}
+
+static std::map<std::string, std::string> cpp_link_texts(VALUE pairs) {
+  std::map<std::string, std::string> texts;
+  if (NIL_P(pairs)) return texts;
+  for (long i = 0; i < RARRAY_LEN(pairs); ++i) {
+    VALUE pair = rb_ary_entry(pairs, i);
+    texts[cpp_string(rb_ary_entry(pair, 0))] = cpp_string(rb_ary_entry(pair, 1));
+  }
+  return texts;
+}
+
+static VALUE ruby_string(std::string const& value) {
+  return rb_utf8_str_new(value.data(), static_cast<long>(value.size()));
 }
 
 // ---- opening and writing ---------------------------------------------------------------------
 
+// Calling initialize again (send(:initialize, ...)) closes the document opened before.
 static VALUE doc_initialize(int argc, VALUE* argv, VALUE self) {
   VALUE filename = Qnil, password = Qnil;
   rb_scan_args(argc, argv, "11", &filename, &password);
-  std::string path = string_arg(filename);
-  std::string pw = NIL_P(password) ? "" : string_arg(password);
+  checked_string(filename);
+  password = checked_optional_string(password);
 
-  DATA_PTR(self) = guarded([&] { return DocumentHandle::open(path, pw).release(); });
+  qpdf_ruby_close(static_cast<DocumentHandle*>(rb_check_typeddata(self, &document_type)));
+  DATA_PTR(self) = nullptr;
+  DATA_PTR(self) = guarded([&] {
+    return DocumentHandle::open(cpp_string(filename), cpp_optional_string(password).value_or("")).release();
+  });
+  RB_GC_GUARD(filename);
+  RB_GC_GUARD(password);
   return self;
 }
 
 static VALUE doc_from_memory(int argc, VALUE* argv, VALUE klass) {
   VALUE data = Qnil, password = Qnil;
   rb_scan_args(argc, argv, "11", &data, &password);
-  Check_Type(data, T_STRING);
-  std::vector<unsigned char> bytes(RSTRING_PTR(data), RSTRING_PTR(data) + RSTRING_LEN(data));
-  std::string pw = NIL_P(password) ? "" : string_arg(password);
+  checked_string(data);
+  password = checked_optional_string(password);
 
-  DocumentHandle* h =
-      guarded([&] { return DocumentHandle::open_memory("ruby-memory", std::move(bytes), pw).release(); });
-  return TypedData_Wrap_Struct(klass, &document_type, h);
+  VALUE doc = doc_alloc(klass);
+  DATA_PTR(doc) = guarded([&] {
+    auto const* bytes = reinterpret_cast<unsigned char const*>(RSTRING_PTR(data));
+    std::vector<unsigned char> copy(bytes, bytes + RSTRING_LEN(data));
+    return DocumentHandle::open_memory("ruby-memory", std::move(copy), cpp_optional_string(password).value_or(""))
+        .release();
+  });
+  RB_GC_GUARD(data);
+  RB_GC_GUARD(password);
+  return doc;
 }
 
 static VALUE doc_write(VALUE self, VALUE out_filename) {
   DocumentHandle* h = handle_of(self);
-  std::string path = string_arg(out_filename);
-  guarded([&] { h->write(path); });
+  checked_string(out_filename);
+  guarded([&] { h->write(cpp_string(out_filename)); });
+  RB_GC_GUARD(out_filename);
   return Qnil;
 }
 
 static VALUE doc_to_memory(VALUE self) {
   DocumentHandle* h = handle_of(self);
-  std::string bytes = guarded([&] { return h->write_to_memory(); });
-  return rb_str_new(bytes.data(), static_cast<long>(bytes.size()));
+  return guarded_to_ruby([&] { return h->write_to_memory(); },
+                         [](std::string const& bytes) { return rb_str_new(bytes.data(), static_cast<long>(bytes.size())); });
 }
 
 // ---- structure tree --------------------------------------------------------------------------
@@ -92,20 +147,21 @@ static QPDFObjectHandle struct_kids(QPDF& pdf) {
 
 static VALUE doc_show_structure(VALUE self) {
   DocumentHandle* h = handle_of(self);
-  std::string result = guarded([&] {
-    QPDF& pdf = h->qpdf();
-    QPDFObjectHandle kids = struct_kids(pdf);
-    PDFStructWalker walker;
-    walker.buildPageObjectMap(pdf);
-    std::string out;
-    if (kids.isArray()) {
-      for (auto kid : kids.aitems()) out += walker.get_structure_as_string(kid);
-    } else {
-      out = walker.get_structure_as_string(kids);
-    }
-    return out;
-  });
-  return rb_utf8_str_new(result.data(), static_cast<long>(result.size()));
+  return guarded_to_ruby(
+      [&] {
+        QPDF& pdf = h->qpdf();
+        QPDFObjectHandle kids = struct_kids(pdf);
+        PDFStructWalker walker;
+        walker.buildPageObjectMap(pdf);
+        std::string out;
+        if (kids.isArray()) {
+          for (auto kid : kids.aitems()) out += walker.get_structure_as_string(kid);
+        } else {
+          out = walker.get_structure_as_string(kids);
+        }
+        return out;
+      },
+      ruby_string);
 }
 
 static VALUE doc_ensure_bbox(VALUE self) {
@@ -136,27 +192,6 @@ static VALUE counts_hash(pdfua::UntaggedCounts const& c) {
   return hash;
 }
 
-static int collect_link_text(VALUE key, VALUE value, VALUE arg) {
-  auto* texts = reinterpret_cast<std::map<std::string, std::string>*>(arg);
-  VALUE k = rb_obj_as_string(key);
-  VALUE v = rb_obj_as_string(value);
-  (*texts)[std::string(RSTRING_PTR(k), RSTRING_LEN(k))] = std::string(RSTRING_PTR(v), RSTRING_LEN(v));
-  return ST_CONTINUE;
-}
-
-static std::map<std::string, std::string> link_texts_arg(VALUE hash) {
-  std::map<std::string, std::string> texts;
-  if (NIL_P(hash)) return texts;
-  Check_Type(hash, T_HASH);
-  rb_hash_foreach(hash, collect_link_text, reinterpret_cast<VALUE>(&texts));
-  return texts;
-}
-
-static std::optional<std::string> title_arg(VALUE title) {
-  if (NIL_P(title)) return std::nullopt;
-  return string_arg(title);
-}
-
 static VALUE doc_mark_untagged_content_as_artifacts(VALUE self) {
   DocumentHandle* h = handle_of(self);
   auto counts = guarded([&] { return pdfua::mark_untagged_content_as_artifacts(h->qpdf()); });
@@ -179,8 +214,10 @@ static VALUE doc_describe_links(int argc, VALUE* argv, VALUE self) {
   VALUE texts = Qnil;
   rb_scan_args(argc, argv, "01", &texts);
   DocumentHandle* h = handle_of(self);
-  auto map = link_texts_arg(texts);
-  return LONG2NUM(guarded([&] { return pdfua::describe_links(h->qpdf(), map); }));
+  VALUE pairs = checked_link_texts(texts);
+  long described = guarded([&] { return pdfua::describe_links(h->qpdf(), cpp_link_texts(pairs)); });
+  RB_GC_GUARD(pairs);
+  return LONG2NUM(described);
 }
 
 static VALUE doc_wrap_list_bodies(VALUE self) {
@@ -208,10 +245,6 @@ static VALUE doc_figures_without_alt(VALUE self) {
   return LONG2NUM(guarded([&] { return pdfua::count_figures_without_alt(h->qpdf()); }));
 }
 
-static VALUE ruby_string(std::string const& value) {
-  return rb_utf8_str_new(value.data(), static_cast<long>(value.size()));
-}
-
 // Every Link annotation: page (1-based), target URI (nil for internal links) and description.
 static VALUE doc_links(VALUE self) {
   DocumentHandle* h = handle_of(self);
@@ -220,7 +253,7 @@ static VALUE doc_links(VALUE self) {
     std::optional<std::string> uri;
     std::optional<std::string> contents;
   };
-  auto links = guarded([&] {
+  auto collect = [&] {
     std::vector<Link> out;
     auto pages = h->qpdf().getAllPages();
     for (size_t i = 0; i < pages.size(); ++i) {
@@ -236,46 +269,53 @@ static VALUE doc_links(VALUE self) {
       }
     }
     return out;
+  };
+  return guarded_to_ruby(collect, [](std::vector<Link> const& links) {
+    VALUE array = rb_ary_new();
+    for (auto const& link : links) {
+      VALUE hash = rb_hash_new();
+      rb_hash_aset(hash, ID2SYM(rb_intern("page")), INT2NUM(link.page));
+      rb_hash_aset(hash, ID2SYM(rb_intern("uri")), link.uri ? ruby_string(*link.uri) : Qnil);
+      rb_hash_aset(hash, ID2SYM(rb_intern("contents")), link.contents ? ruby_string(*link.contents) : Qnil);
+      rb_ary_push(array, hash);
+    }
+    return array;
   });
-  VALUE array = rb_ary_new();
-  for (auto const& link : links) {
-    VALUE hash = rb_hash_new();
-    rb_hash_aset(hash, ID2SYM(rb_intern("page")), INT2NUM(link.page));
-    rb_hash_aset(hash, ID2SYM(rb_intern("uri")), link.uri ? ruby_string(*link.uri) : Qnil);
-    rb_hash_aset(hash, ID2SYM(rb_intern("contents")), link.contents ? ruby_string(*link.contents) : Qnil);
-    rb_ary_push(array, hash);
-  }
-  return array;
 }
 
 // The catalog's XMP metadata as a string, or nil.
 static VALUE doc_metadata(VALUE self) {
   DocumentHandle* h = handle_of(self);
-  auto xmp = guarded([&]() -> std::optional<std::string> {
-    QPDFObjectHandle metadata = h->qpdf().getRoot().getKey("/Metadata");
-    if (!metadata.isStream()) return std::nullopt;
-    auto data = metadata.getStreamData(qpdf_dl_generalized);
-    return std::string(reinterpret_cast<char const*>(data->getBuffer()), data->getSize());
-  });
-  return xmp ? ruby_string(*xmp) : Qnil;
+  return guarded_to_ruby(
+      [&]() -> std::optional<std::string> {
+        QPDFObjectHandle metadata = h->qpdf().getRoot().getKey("/Metadata");
+        if (!metadata.isStream()) return std::nullopt;
+        auto data = metadata.getStreamData(qpdf_dl_generalized);
+        return std::string(reinterpret_cast<char const*>(data->getBuffer()), data->getSize());
+      },
+      [](std::optional<std::string> const& xmp) { return xmp ? ruby_string(*xmp) : Qnil; });
 }
 
 // The structure tree's RoleMap as {"Aside" => "Sect", ...}.
 static VALUE doc_role_map(VALUE self) {
   DocumentHandle* h = handle_of(self);
-  auto roles = guarded([&] {
-    std::map<std::string, std::string> out;
-    QPDFObjectHandle map = h->qpdf().getRoot().getKey("/StructTreeRoot").getKey("/RoleMap");
-    if (map.isDictionary()) {
-      for (auto [key, value] : map.ditems()) {
-        if (value.isName()) out[key.substr(1)] = value.getName().substr(1);
-      }
-    }
-    return out;
-  });
-  VALUE hash = rb_hash_new();
-  for (auto const& [key, value] : roles) rb_hash_aset(hash, ruby_string(key), ruby_string(value));
-  return hash;
+  return guarded_to_ruby(
+      [&] {
+        std::map<std::string, std::string> out;
+        QPDFObjectHandle tree = h->qpdf().getRoot().getKey("/StructTreeRoot");
+        QPDFObjectHandle map = tree.isDictionary() ? tree.getKey("/RoleMap") : QPDFObjectHandle::newNull();
+        if (map.isDictionary()) {
+          for (auto [key, value] : map.ditems()) {
+            if (value.isName()) out[key.substr(1)] = value.getName().substr(1);
+          }
+        }
+        return out;
+      },
+      [](std::map<std::string, std::string> const& roles) {
+        VALUE hash = rb_hash_new();
+        for (auto const& [key, value] : roles) rb_hash_aset(hash, ruby_string(key), ruby_string(value));
+        return hash;
+      });
 }
 
 static VALUE kwarg(VALUE kwargs, char const* name) {
@@ -287,18 +327,29 @@ static VALUE doc_add_pdfua_identification(int argc, VALUE* argv, VALUE self) {
   VALUE kwargs = Qnil;
   rb_scan_args(argc, argv, ":", &kwargs);
   DocumentHandle* h = handle_of(self);
-  auto title = title_arg(kwarg(kwargs, "title"));
-  return guarded([&] { return pdfua::add_pdfua_identification(h->qpdf(), title); }) ? Qtrue : Qfalse;
+  VALUE title = checked_optional_string(kwarg(kwargs, "title"));
+  bool changed = guarded([&] { return pdfua::add_pdfua_identification(h->qpdf(), cpp_optional_string(title)); });
+  RB_GC_GUARD(title);
+  return changed ? Qtrue : Qfalse;
 }
+
+static VALUE report_hash(pdfua::Report const& report);
 
 static VALUE doc_apply_pdfua_fixes(int argc, VALUE* argv, VALUE self) {
   VALUE kwargs = Qnil;
   rb_scan_args(argc, argv, ":", &kwargs);
   DocumentHandle* h = handle_of(self);
-  auto texts = link_texts_arg(kwarg(kwargs, "link_texts"));
-  auto title = title_arg(kwarg(kwargs, "title"));
+  VALUE pairs = checked_link_texts(kwarg(kwargs, "link_texts"));
+  VALUE title = checked_optional_string(kwarg(kwargs, "title"));
 
-  auto report = guarded([&] { return pdfua::apply(h->qpdf(), texts, title); });
+  VALUE out = guarded_to_ruby([&] { return pdfua::apply(h->qpdf(), cpp_link_texts(pairs), cpp_optional_string(title)); },
+                              report_hash);
+  RB_GC_GUARD(pairs);
+  RB_GC_GUARD(title);
+  return out;
+}
+
+static VALUE report_hash(pdfua::Report const& report) {
   VALUE hash = rb_hash_new();
   rb_hash_aset(hash, ID2SYM(rb_intern("artifacts")), counts_hash(report.artifacts));
   rb_hash_aset(hash, ID2SYM(rb_intern("links")), LONG2NUM(report.links));
@@ -307,6 +358,8 @@ static VALUE doc_apply_pdfua_fixes(int argc, VALUE* argv, VALUE self) {
   rb_hash_aset(hash, ID2SYM(rb_intern("figure_groups")), LONG2NUM(report.figure_groups));
   rb_hash_aset(hash, ID2SYM(rb_intern("figures_without_alt")), LONG2NUM(report.figures_without_alt));
   rb_hash_aset(hash, ID2SYM(rb_intern("identified")), report.identified ? Qtrue : Qfalse);
+  rb_hash_aset(hash, ID2SYM(rb_intern("unidentified_reason")),
+               report.unidentified_reason ? ruby_string(*report.unidentified_reason) : Qnil);
   return hash;
 }
 
@@ -324,23 +377,27 @@ static VALUE doc_encrypt(int argc, VALUE* argv, VALUE self) {
 
   // rb_get_kwargs leaves Qundef for keywords not given.
   auto or_default = [&](int i, VALUE fallback) { return values[i] == Qundef ? fallback : values[i]; };
-  std::string user_pw = string_arg(or_default(0, rb_str_new_cstr("")));
-  std::string owner_pw = string_arg(or_default(1, rb_str_new_cstr("")));
+  VALUE user_pw = checked_string(or_default(0, rb_str_new_cstr("")));
+  VALUE owner_pw = checked_string(or_default(1, rb_str_new_cstr("")));
   int revision = NUM2INT(or_default(2, INT2NUM(4)));
   auto print = static_cast<qpdf_r3_print_e>(NUM2INT(or_default(3, INT2NUM(qpdf_r3p_low))));
 
   DocumentHandle* h = handle_of(self);
   guarded([&] {
-    h->set_encryption(user_pw, owner_pw, revision, print, RTEST(or_default(4, Qfalse)), RTEST(or_default(5, Qfalse)),
-                      RTEST(or_default(6, Qtrue)), RTEST(or_default(7, Qfalse)), RTEST(or_default(8, Qfalse)),
-                      RTEST(or_default(9, Qfalse)), RTEST(or_default(10, Qtrue)), RTEST(or_default(11, Qtrue)));
+    h->set_encryption(cpp_string(user_pw), cpp_string(owner_pw), revision, print, RTEST(or_default(4, Qfalse)),
+                      RTEST(or_default(5, Qfalse)), RTEST(or_default(6, Qtrue)), RTEST(or_default(7, Qfalse)),
+                      RTEST(or_default(8, Qfalse)), RTEST(or_default(9, Qfalse)), RTEST(or_default(10, Qtrue)),
+                      RTEST(or_default(11, Qtrue)));
   });
+  RB_GC_GUARD(user_pw);
+  RB_GC_GUARD(owner_pw);
   return Qnil;
 }
 
 // ---- definitions -----------------------------------------------------------------------------
 
-extern "C" __attribute__((visibility("default"))) void Init_qpdf_ruby(void) {
+extern "C" {
+RUBY_FUNC_EXPORTED void Init_qpdf_ruby(void) {
   rb_mQpdfRuby = rb_define_module("QpdfRuby");
   rb_eQpdfRubyError = rb_define_class_under(rb_mQpdfRuby, "Error", rb_eRuntimeError);
   rb_cDocument = rb_define_class_under(rb_mQpdfRuby, "Document", rb_cObject);
@@ -377,3 +434,4 @@ extern "C" __attribute__((visibility("default"))) void Init_qpdf_ruby(void) {
   rb_define_const(rb_mQpdfRuby, "PRINT_LOW", INT2NUM(qpdf_r3p_low));
   rb_define_const(rb_mQpdfRuby, "PRINT_NONE", INT2NUM(qpdf_r3p_none));
 }
+}  // extern "C"

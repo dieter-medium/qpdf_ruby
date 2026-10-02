@@ -27,6 +27,8 @@ struct UntaggedCounts {
 // their construction operators), text shows, XObjects, shadings, inline images. Content inside
 // marked content is never touched, and neither is a Form XObject that carries marked content of
 // its own (wrapping it would nest tagged content in an artifact, 7.1-2). Returns the counts.
+// Covers page content and the Form XObjects it draws - not annotation appearance streams (/AP),
+// tiling-pattern content or Type 3 glyph procedures, which Chromium does not emit today.
 UntaggedCounts mark_untagged_content_as_artifacts(QPDF& pdf);
 
 // The same walk without changing anything.
@@ -66,7 +68,10 @@ long count_figures_without_alt(QPDF& pdf);
 // Marked. An existing metadata stream keeps everything it has: pdfuaid:part and dc:title are each
 // added only if missing (looked up by namespace, element or attribute form); an existing dc:title is
 // never replaced. Without a stream, a new one is written. The title is `title` if given (it also
-// becomes the information dictionary's /Title), else that /Title. Returns true if anything changed.
+// becomes the information dictionary's /Title), else that /Title. Never throws for odd input:
+// without a structure tree only the title and DisplayDocTitle are set (Marked and pdfuaid would
+// claim a tagged file), and an existing packet whose RDF element cannot be found is left alone -
+// apply() reports both as unidentified_reason. Returns true if anything changed.
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title);
 
 struct Report {
@@ -77,6 +82,7 @@ struct Report {
   long figure_groups = 0;
   long figures_without_alt = 0;
   bool identified = false;
+  std::optional<std::string> unidentified_reason;  // why the file is not identified, if it is not
 };
 
 // All of the above, in the order that keeps each step's input intact.

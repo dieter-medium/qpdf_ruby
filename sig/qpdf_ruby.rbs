@@ -1,4 +1,79 @@
 module QpdfRuby
   VERSION: String
-  # See the writing guide of rbs: https://github.com/ruby/rbs#guides
+
+  ENCRYPTION_REVISION_AES_128: Integer
+  ENCRYPTION_REVISION_AES_256: Integer
+  ENCRYPTION_REVISION_AES_256U: Integer
+  PRINT_FULL: Integer
+  PRINT_LOW: Integer
+  PRINT_NONE: Integer
+
+  class Error < RuntimeError
+  end
+
+  class Document
+    type untagged_counts = {
+      paths: Integer,
+      texts: Integer,
+      xobjects: Integer,
+      shadings: Integer,
+      inline_images: Integer,
+      total: Integer
+    }
+
+    type pdfua_report = {
+      artifacts: untagged_counts,
+      links: Integer,
+      list_bodies: Integer,
+      roles: Integer,
+      figure_groups: Integer,
+      figures_without_alt: Integer,
+      identified: bool,
+      unidentified_reason: String?
+    }
+
+    type link = { page: Integer, uri: String?, contents: String? }
+
+    def self.from_memory: (String data, ?String? password) -> Document
+
+    def initialize: (String filename, ?String? password) -> void
+
+    def write: (String filename) -> nil
+    def to_memory: () -> String
+
+    def show_structure: () -> String
+    def ensure_bbox: () -> nil
+
+    def apply_pdfua_fixes: (?link_texts: Hash[untyped, untyped]?, ?title: String?) -> pdfua_report
+    def mark_untagged_content_as_artifacts: () -> untagged_counts
+    # deprecated: use #mark_untagged_content_as_artifacts
+    def mark_paths_as_artifacts: () -> untagged_counts
+    def untagged_content: () -> untagged_counts
+    def describe_links: (?Hash[untyped, untyped]? texts) -> Integer
+    def wrap_list_bodies: () -> Integer
+    def parent_tree_mismatches: () -> Integer
+    def map_nonstandard_roles: () -> Integer
+    def retag_grouping_figures: () -> Integer
+    def figures_without_alt: () -> Integer
+    def add_pdfua_identification: (?title: String?) -> bool
+
+    def links: () -> Array[link]
+    def metadata: () -> String?
+    def role_map: () -> Hash[String, String]
+
+    def encrypt: (
+      ?user_pw: String,
+      ?owner_pw: String,
+      ?encryption_revision: Integer,
+      ?allow_print: Integer,
+      ?allow_modify: boolish,
+      ?allow_extract: boolish,
+      ?accessibility: boolish,
+      ?assemble: boolish,
+      ?annotate_and_form: boolish,
+      ?form_filling: boolish,
+      ?encrypt_metadata: boolish,
+      ?use_aes: boolish
+    ) -> nil
+  end
 end

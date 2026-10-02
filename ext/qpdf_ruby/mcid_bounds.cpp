@@ -216,6 +216,8 @@ McidBounds find_mcid_bounds(QPDF& pdf) {
         box[2] = std::min(box[2], crop.getArrayItem(2).getNumericValue());
         box[3] = std::min(box[3], crop.getArrayItem(3).getNumericValue());
       }
+      // Content entirely outside the crop box is invisible: no bounds rather than an inverted box.
+      if (box[0] > box[2] || box[1] > box[3]) continue;
       bounds[key] = box;
     }
   }

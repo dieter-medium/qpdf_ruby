@@ -27,15 +27,27 @@ const std::set<std::string> kTextShow = {"Tj", "TJ", "'", "\""};
 const std::set<std::string> kPathState = {"w",  "J",  "j", "M",  "d",  "ri", "i",  "gs", "CS", "cs",
                                           "SC", "SCN", "sc", "scn", "G", "g",  "RG", "rg", "K",  "k"};
 
+// Notes whether a content stream uses a marked-content operator - as a token, so "BDC" inside a
+// string or an inline image's data does not count.
+class MarkedContentProbe : public QPDFObjectHandle::TokenFilter {
+ public:
+  void handleToken(QPDFTokenizer::Token const& token) override {
+    if (token.getType() == QPDFTokenizer::tt_word && (token.getValue() == "BDC" || token.getValue() == "BMC")) {
+      found = true;
+    }
+  }
+  bool found = false;
+};
+
 // True if a Form XObject (or anything it draws) carries marked content of its own.
 bool form_has_marked_content(QPDFObjectHandle xobject, std::set<QPDFObjGen>& seen) {
   if (!xobject.isStream() || !seen.insert(xobject.getObjGen()).second) return false;
   QPDFObjectHandle dict = xobject.getDict();
   if (!dict.getKey("/Subtype").isNameAndEquals("/Form")) return false;
   if (dict.hasKey("/StructParents") || dict.hasKey("/StructParent")) return true;
-  auto data = xobject.getStreamData(qpdf_dl_generalized);
-  std::string text(reinterpret_cast<char const*>(data->getBuffer()), data->getSize());
-  if (text.find("BDC") != std::string::npos || text.find("BMC") != std::string::npos) return true;
+  MarkedContentProbe probe;
+  xobject.filterAsContents(&probe, nullptr);
+  if (probe.found) return true;
   QPDFObjectHandle resources = dict.getKey("/Resources");
   QPDFObjectHandle xobjects = resources.isDictionary() ? resources.getKey("/XObject") : QPDFObjectHandle::newNull();
   if (xobjects.isDictionary()) {
@@ -437,7 +449,8 @@ long wrap_list_bodies(QPDF& pdf) {
       }
       bool is_objr = kid.isDictionary() && kid.getKey("/Type").isNameAndEquals("/OBJR");
       if (is_objr) {
-        QPDFObjectHandle key = kid.getKey("/Obj").getKey("/StructParent");
+        QPDFObjectHandle object = kid.getKey("/Obj");
+        QPDFObjectHandle key = object.isDictionary() ? object.getKey("/StructParent") : QPDFObjectHandle::newNull();
         if (!key.isInteger()) {
           ok = false;
           break;
@@ -631,10 +644,29 @@ QPDFObjectHandle catalog_dict(QPDFObjectHandle root, std::string const& key) {
 
 }  // namespace
 
-bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title) {
+namespace {
+
+constexpr char kRdfNs[] = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+
+// Where the packet's rdf:RDF element closes, and the prefix it uses for the RDF namespace - found
+// the same way as has_property, so not a full XML parser either. npos if no bound prefix closes one
+// (a default-namespace RDF element, or a packet that is not XMP at all).
+std::pair<size_t, std::string> rdf_close(std::string const& xmp) {
+  for (auto const& prefix : xmlns_prefixes(xmp, kRdfNs)) {
+    std::string const tag = "</" + prefix + ":RDF";
+    for (size_t at = xmp.rfind(tag); at != std::string::npos; at = at == 0 ? std::string::npos : xmp.rfind(tag, at - 1)) {
+      size_t after = at + tag.size();
+      while (after < xmp.size() && is_xml_space(xmp[after])) ++after;
+      if (after < xmp.size() && xmp[after] == '>') return {at, prefix};
+    }
+  }
+  return {std::string::npos, ""};
+}
+
+// The identification step, with the reason when the file could not be identified.
+bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<std::string>& unidentified) {
   QPDFObjectHandle root = pdf.getRoot();
   bool changed = ensure_true(catalog_dict(root, "/ViewerPreferences"), "/DisplayDocTitle");
-  changed = ensure_true(catalog_dict(root, "/MarkInfo"), "/Marked") || changed;
 
   std::string doc_title;
   QPDFObjectHandle info = pdf.getTrailer().getKey("/Info");
@@ -653,14 +685,26 @@ bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title
     doc_title = info.getKey("/Title").getUTF8Value();
   }
 
-  std::string const part_xml = "<pdfuaid:part>1</pdfuaid:part>";
-  std::string const title_xml =
-      "<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">" + xml_escape(doc_title) + "</rdf:li></rdf:Alt></dc:title>";
+  // Marked and pdfuaid both claim a tagged file - false without a structure tree.
+  if (!struct_tree(pdf).isDictionary()) {
+    unidentified = "no structure tree: the file is not tagged";
+    return changed;
+  }
+  changed = ensure_true(catalog_dict(root, "/MarkInfo"), "/Marked") || changed;
+
   std::string const part_ns = std::string(" xmlns:pdfuaid=\"") + kPdfuaNs + "\"";
   std::string const dc_ns = std::string(" xmlns:dc=\"") + kDcNs + "\"";
+  auto description = [&](std::string const& rdf, bool part, bool with_title) {
+    return "<" + rdf + ":Description " + rdf + ":about=\"\"" + (part ? part_ns : "") + (with_title ? dc_ns : "") +
+           ">" + (part ? "<pdfuaid:part>1</pdfuaid:part>" : "") +
+           (with_title ? "<dc:title><" + rdf + ":Alt><" + rdf + ":li xml:lang=\"x-default\">" + xml_escape(doc_title) +
+                             "</" + rdf + ":li></" + rdf + ":Alt></dc:title>"
+                       : "") +
+           "</" + rdf + ":Description>\n";
+  };
 
   // An existing packet keeps everything it has; only what is missing goes into one new
-  // rdf:Description, the identification and the title each checked on their own.
+  // Description, the identification and the title each checked on their own.
   QPDFObjectHandle metadata = root.getKey("/Metadata");
   if (metadata.isStream()) {
     auto data = metadata.getStreamData(qpdf_dl_generalized);
@@ -669,27 +713,33 @@ bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title
     bool add_title = !doc_title.empty() && !has_property(xmp, kDcNs, "title");
     if (!add_part && !add_title) return changed;
 
-    auto end = xmp.find("</rdf:RDF>");
-    if (end == std::string::npos) throw std::runtime_error("existing XMP metadata has no rdf:RDF element");
-    std::string description = "<rdf:Description rdf:about=\"\"" + (add_part ? part_ns : "") +
-                              (add_title ? dc_ns : "") + ">" + (add_part ? part_xml : "") +
-                              (add_title ? title_xml : "") + "</rdf:Description>\n";
-    xmp.insert(end, description);
+    auto [end, rdf] = rdf_close(xmp);
+    if (end == std::string::npos) {
+      // Replacing the packet would lose what it holds; leave it, and say so.
+      unidentified = "existing XMP metadata has no closing RDF element with a namespace prefix";
+      return changed;
+    }
+    xmp.insert(end, description(rdf, add_part, add_title));
     metadata.replaceStreamData(xmp, QPDFObjectHandle::newNull(), QPDFObjectHandle::newNull());
     return true;
   }
 
-  std::string xmp =
-      "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
-      "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n"
-      "<rdf:Description rdf:about=\"\"" + part_ns + dc_ns + ">\n" + part_xml + "\n" +
-      (doc_title.empty() ? "" : title_xml + "\n") +
-      "</rdf:Description></rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
+  std::string xmp = "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
+                    "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"" +
+                    std::string(kRdfNs) + "\">\n" + description("rdf", true, !doc_title.empty()) +
+                    "</rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
   QPDFObjectHandle stream = QPDFObjectHandle::newStream(&pdf, xmp);
   stream.getDict().replaceKey("/Type", QPDFObjectHandle::newName("/Metadata"));
   stream.getDict().replaceKey("/Subtype", QPDFObjectHandle::newName("/XML"));
   root.replaceKey("/Metadata", stream);
   return true;
+}
+
+}  // namespace
+
+bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title) {
+  std::optional<std::string> unidentified;
+  return identify(pdf, title, unidentified);
 }
 
 Report apply(QPDF& pdf, std::map<std::string, std::string> const& link_texts, std::optional<std::string> const& title) {
@@ -700,7 +750,7 @@ Report apply(QPDF& pdf, std::map<std::string, std::string> const& link_texts, st
   report.roles = map_nonstandard_roles(pdf);
   report.figure_groups = retag_grouping_figures(pdf);
   report.figures_without_alt = count_figures_without_alt(pdf);
-  report.identified = add_pdfua_identification(pdf, title);
+  report.identified = identify(pdf, title, report.unidentified_reason);
   return report;
 }
 

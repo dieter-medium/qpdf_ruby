@@ -36,21 +36,31 @@ module EdgeCasePdfs
     ])
   end
 
+  # A tagged one-page file (an empty structure tree) whose catalog carries `xmp` as its metadata.
+  def with_xmp(xmp)
+    MinimalPdf.build([
+      "<< /Type /Catalog /Pages 2 0 R /Metadata 4 0 R /StructTreeRoot 5 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+      ["<< /Type /Metadata /Subtype /XML >>", xmp],
+      "<< /Type /StructTreeRoot /K [] >>"
+    ])
+  end
+
+  # An XMP packet whose RDF namespace is bound to `rdf` and whose only Description holds `body`
+  # (`attributes` go on that Description).
+  def xmp_packet(body = "", attributes: "", rdf: "rdf")
+    "<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n" \
+      "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><#{rdf}:RDF xmlns:#{rdf}=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n" \
+      "<#{rdf}:Description #{rdf}:about=\"\" xmlns:pdfuaid=\"http://www.aiim.org/pdfua/ns/id/\"#{attributes}>" \
+      "#{body}</#{rdf}:Description>\n</#{rdf}:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>"
+  end
+
   # Existing XMP metadata that already identifies the file as PDF/UA-1 (`part`, element or
   # attribute form) but has no dc:title.
   def with_pdfua_xmp_without_title(part = "<pdfuaid:part>1</pdfuaid:part>")
     attribute = part.start_with?("<") ? "" : " #{part}"
-    element = part.start_with?("<") ? part : ""
-    xmp = "<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n" \
-          "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n" \
-          "<rdf:Description rdf:about=\"\" xmlns:pdfuaid=\"http://www.aiim.org/pdfua/ns/id/\"#{attribute}>" \
-          "#{element}</rdf:Description>\n</rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>"
-    MinimalPdf.build([
-      "<< /Type /Catalog /Pages 2 0 R /Metadata 4 0 R >>",
-      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
-      ["<< /Type /Metadata /Subtype /XML >>", xmp]
-    ])
+    with_xmp(xmp_packet(part.start_with?("<") ? part : "", attributes: attribute))
   end
 
   # Two pages; page 1 links to the string destination (kapitel) - page 2 - held in the catalog's
