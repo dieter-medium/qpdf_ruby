@@ -20,6 +20,15 @@ RSpec.describe "Making Chromium's tagged PDFs PDF/UA-1 conformant" do
 
   def mcids(doc) = doc.show_structure.scan(/\[MCID: (\d+)\]/).flatten.tally
 
+  # Grouping elements that hold marked content directly - what PAC reports as content in an
+  # inadmissible location.
+  def grouping_with_content(doc)
+    grouping = %w[Document Part Art Sect Div BlockQuote TOC TOCI Index Table THead TBody TFoot TR L LI]
+    structure(doc).xpath(grouping.map { |type| "//#{type}" }.join(" | ")).select do |node|
+      node.xpath("text()").map(&:text).join.include?("[MCID:")
+    end.map(&:name)
+  end
+
   %w[chromium_print_cases.pdf modern_cv.pdf].each do |name|
     context "with #{name}" do
       it "starts out with content Chromium left untagged" do
@@ -30,8 +39,12 @@ RSpec.describe "Making Chromium's tagged PDFs PDF/UA-1 conformant" do
         expect(fixed(name).untagged_content[:total]).to eq(0)
       end
 
-      it "keeps every piece of tagged content" do
-        expect(mcids(fixed(name))).to eq(mcids(open_fixture(name)))
+      it "keeps every piece of tagged content but the decorations it turns into artifacts" do
+        doc = open_fixture(name)
+        before = mcids(doc).values.sum
+        decorations = doc.apply_pdfua_fixes[:decorations]
+
+        expect(mcids(QpdfRuby::Document.from_memory(doc.to_memory)).values.sum).to eq(before - decorations)
       end
 
       it "describes every link" do
@@ -40,6 +53,10 @@ RSpec.describe "Making Chromium's tagged PDFs PDF/UA-1 conformant" do
 
       it "keeps every ParentTree entry pointing at the element that holds the content" do
         expect(fixed(name).parent_tree_mismatches).to eq(0)
+      end
+
+      it "leaves no content directly in a grouping element" do
+        expect(grouping_with_content(fixed(name))).to be_empty
       end
 
       it "gives list items only labels and bodies" do
@@ -56,7 +73,8 @@ RSpec.describe "Making Chromium's tagged PDFs PDF/UA-1 conformant" do
         doc = fixed(name)
         report = doc.apply_pdfua_fixes
 
-        expect(report).to include(artifacts: include(total: 0), links: 0, list_bodies: 0, roles: 0, figure_groups: 0,
+        expect(report).to include(decorations: 0, artifacts: include(total: 0), links: 0, list_bodies: 0, roles: 0,
+                                  figure_groups: 0,
                                   identified: false)
       end
     end
@@ -64,6 +82,10 @@ RSpec.describe "Making Chromium's tagged PDFs PDF/UA-1 conformant" do
 
   context "with chromium_print_cases.pdf" do
     let(:name) { "chromium_print_cases.pdf" }
+
+    it "starts out with the table's cell backgrounds tagged as the Table's content" do
+      expect(grouping_with_content(open_fixture(name))).to eq(["Table"])
+    end
 
     it "maps Chromium's PDF 2.0 tags to standard types" do
       expect(fixed(name).role_map).to include("Strong" => "Span", "Em" => "Span")

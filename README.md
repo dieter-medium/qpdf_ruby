@@ -10,6 +10,7 @@ gem closes them without touching the content that is tagged:
 | PDF/UA-1 rule (veraPDF) | What Chromium does | What QpdfRuby does | Ruby API |
 | --- | --- | --- | --- |
 | 7.1-3 untagged content | backgrounds, borders, bars, `aria-hidden` and SVG decorations end up outside any marked content; it never writes `/Artifact` | wraps every painting operation outside marked content in `/Artifact BMC … EMC` (not a Form XObject that carries tagged content) | `doc.mark_untagged_content_as_artifacts` |
+| PAC: content in an inadmissible location, invalid TR | CSS backgrounds and borders are tagged as content of the grouping element they belong to (a `Table`'s cell backgrounds, an `<article>`'s card) | turns such shape-only content into artifacts and takes it out of the structure tree; content with text stays tagged | `doc.artifact_tagged_decorations` |
 | 7.18.1-2, 7.18.5-2 link descriptions | no `/Contents` on Link annotations | your text per URI, else the structure element's `/Alt`/`/ActualText`, else the URI (internal links: your text for `"#<destination>"`, else "Page N" - named destinations from `/Dests`, string destinations from the `/Names` tree) | `doc.describe_links(texts = {})` |
 | 7.2-20 list items | `LI` holds `Lbl` and the content directly, never `LBody` | moves the content into an `LBody`, ParentTree entries updated (a Form XObject's MCIDs in its own entry) | `doc.wrap_list_bodies` |
 | 7.1-5 non-standard types | PDF 2.0 types (`Strong`, `Em`, `Aside`, …) without a RoleMap | maps them to PDF 1.7 types in the RoleMap (table below) | `doc.map_nonstandard_roles` |
@@ -110,8 +111,8 @@ report = pdf.apply_pdfua_fixes(
   link_texts: { "mailto:jana@example.com" => "E-mail Jana" }, # optional, per URI or "#destination"
   title: "Curriculum vitae - Jana Example"                    # optional, else the PDF's /Title
 )
-# => { artifacts: { paths: 75, texts: 101, …, total: 176 }, links: 2, list_bodies: 34, roles: 0,
-#      figure_groups: 0, figures_without_alt: 0, identified: true, unidentified_reason: nil }
+# => { decorations: 3, artifacts: { paths: 75, texts: 101, …, total: 176 }, links: 2, list_bodies: 34,
+#      roles: 0, figure_groups: 0, figures_without_alt: 0, identified: true, unidentified_reason: nil }
 
 pdf.ensure_bbox                     # layout BBoxes for figures (PAC 2024 asks for them)
 pdf.write("accessible.pdf")         # or pdf.to_memory

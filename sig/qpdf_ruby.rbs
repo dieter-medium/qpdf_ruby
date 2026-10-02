@@ -22,6 +22,7 @@ module QpdfRuby
     }
 
     type pdfua_report = {
+      decorations: Integer,
       artifacts: untagged_counts,
       links: Integer,
       list_bodies: Integer,
@@ -50,6 +51,7 @@ module QpdfRuby
     def mark_paths_as_artifacts: () -> untagged_counts
     def untagged_content: () -> untagged_counts
     def describe_links: (?Hash[untyped, untyped]? texts) -> Integer
+    def artifact_tagged_decorations: () -> Integer
     def wrap_list_bodies: () -> Integer
     def parent_tree_mismatches: () -> Integer
     def map_nonstandard_roles: () -> Integer

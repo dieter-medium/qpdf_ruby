@@ -221,6 +221,11 @@ static VALUE doc_describe_links(int argc, VALUE* argv, VALUE self) {
   return LONG2NUM(described);
 }
 
+static VALUE doc_artifact_tagged_decorations(VALUE self) {
+  DocumentHandle* h = handle_of(self);
+  return LONG2NUM(guarded([&] { return pdfua::artifact_tagged_decorations(h->qpdf()); }));
+}
+
 static VALUE doc_wrap_list_bodies(VALUE self) {
   DocumentHandle* h = handle_of(self);
   return LONG2NUM(guarded([&] { return pdfua::wrap_list_bodies(h->qpdf()); }));
@@ -357,6 +362,7 @@ static VALUE doc_apply_pdfua_fixes(int argc, VALUE* argv, VALUE self) {
 
 static VALUE report_hash(pdfua::Report const& report) {
   VALUE hash = rb_hash_new();
+  rb_hash_aset(hash, ID2SYM(rb_intern("decorations")), LONG2NUM(report.decorations));
   rb_hash_aset(hash, ID2SYM(rb_intern("artifacts")), counts_hash(report.artifacts));
   rb_hash_aset(hash, ID2SYM(rb_intern("links")), LONG2NUM(report.links));
   rb_hash_aset(hash, ID2SYM(rb_intern("list_bodies")), LONG2NUM(report.list_bodies));
@@ -422,6 +428,7 @@ RUBY_FUNC_EXPORTED void Init_qpdf_ruby(void) {
   rb_define_method(rb_cDocument, "mark_paths_as_artifacts", RUBY_METHOD_FUNC(doc_mark_paths_as_artifacts), 0);
   rb_define_method(rb_cDocument, "untagged_content", RUBY_METHOD_FUNC(doc_untagged_content), 0);
   rb_define_method(rb_cDocument, "describe_links", RUBY_METHOD_FUNC(doc_describe_links), -1);
+  rb_define_method(rb_cDocument, "artifact_tagged_decorations", RUBY_METHOD_FUNC(doc_artifact_tagged_decorations), 0);
   rb_define_method(rb_cDocument, "wrap_list_bodies", RUBY_METHOD_FUNC(doc_wrap_list_bodies), 0);
   rb_define_method(rb_cDocument, "parent_tree_mismatches", RUBY_METHOD_FUNC(doc_parent_tree_mismatches), 0);
   rb_define_method(rb_cDocument, "map_nonstandard_roles", RUBY_METHOD_FUNC(doc_map_nonstandard_roles), 0);

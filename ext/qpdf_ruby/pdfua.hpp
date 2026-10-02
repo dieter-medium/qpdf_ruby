@@ -34,6 +34,15 @@ UntaggedCounts mark_untagged_content_as_artifacts(QPDF& pdf);
 // The same walk without changing anything.
 UntaggedCounts count_untagged_content(QPDF& pdf);
 
+// Chromium tags CSS backgrounds and borders as content of the element they belong to - a Table's
+// cell backgrounds, an <article>'s card - and a grouping element (Document, Part, Art, Sect, Div,
+// BlockQuote, TOC, TOCI, Index, the table and list containers; after the RoleMap) must not hold
+// content of its own (PAC: "Content in an inadmissible location", "Invalid use of a TR"). Content
+// held directly by such an element that paints only shapes - no text, XObject or inline image, no
+// nested tagged content - becomes /Artifact BMC ... EMC, and leaves the element's kids and the
+// ParentTree. Content with text stays tagged. Returns how many pieces were turned into artifacts.
+long artifact_tagged_decorations(QPDF& pdf);
+
 // Gives each Link annotation without /Contents a description (7.18.1-2, 7.18.5-2): the text given
 // for its URI in `texts`, else its structure element's /Alt or /ActualText, else the URI itself
 // (a mailto: address without the scheme). An internal link uses the text given for "#<name>" of
@@ -76,6 +85,7 @@ long count_figures_without_alt(QPDF& pdf);
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title);
 
 struct Report {
+  long decorations = 0;
   UntaggedCounts artifacts;
   long links = 0;
   long list_bodies = 0;

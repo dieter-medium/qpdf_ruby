@@ -8,6 +8,8 @@
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFTokenizer.hh>
 
+#include <climits>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <set>
@@ -411,6 +413,194 @@ long describe_links(QPDF& pdf, std::map<std::string, std::string> const& texts) 
   return described;
 }
 
+namespace {
+
+// Structure types that group other elements and must not hold content of their own (ISO 32000-1
+// 14.8.4.2, and the table and list containers).
+const std::set<std::string> kGrouping = {"/Document", "/Part",  "/Art",   "/Sect",  "/Div",   "/BlockQuote",
+                                         "/TOC",      "/TOCI",  "/Index", "/Table", "/THead", "/TBody",
+                                         "/TFoot",    "/TR",    "/L",     "/LI"};
+
+// Operators whose output is more than a shape: text, XObjects (an image, or a form that may hold
+// text), inline images.
+const std::set<std::string> kNotDecorative = {"Tj", "TJ", "'", "\"", "Do", "BI"};
+
+// A structure type after following the RoleMap (bounded, so a cycle cannot hang the walk).
+std::string standard_type(QPDFObjectHandle elem, QPDFObjectHandle role_map) {
+  QPDFObjectHandle s = elem.getKey("/S");
+  if (!s.isName()) return "";
+  std::string type = s.getName();
+  for (int guard = 0; guard < 16 && !kGrouping.count(type) && role_map.isDictionary(); ++guard) {
+    QPDFObjectHandle mapped = role_map.getKey(type);
+    if (!mapped.isName() || mapped.getName() == type) break;
+    type = mapped.getName();
+  }
+  return type;
+}
+
+// Reads which marked-content sequences of one content stream paint only shapes, and - when
+// rewriting - turns the sequences of `targets` into /Artifact BMC ... EMC.
+class DecorationFilter : public QPDFObjectHandle::TokenFilter {
+ public:
+  DecorationFilter(QPDFObjectHandle resources, std::set<int> targets = {})
+      : resources_(std::move(resources)), targets_(std::move(targets)) {}
+
+  void handleToken(QPDFTokenizer::Token const& token) override {
+    if (token.getType() != QPDFTokenizer::tt_word) {
+      pending_.push_back(token);
+      return;
+    }
+    std::string const& op = token.getValue();
+    if (op == "BDC") {
+      int mcid = pending_mcid();
+      if (mcid >= 0) {
+        if (int outer = innermost(); outer >= 0) decorative[outer] = false;  // shapes around tagged content
+        decorative.try_emplace(mcid, true);
+      }
+      stack_.push_back(mcid);
+      if (mcid >= 0 && targets_.count(mcid)) {
+        pending_.clear();
+        write(" /Artifact BMC");
+        return;
+      }
+    } else if (op == "BMC") {
+      stack_.push_back(-1);
+    } else if (op == "EMC") {
+      if (!stack_.empty()) stack_.pop_back();
+    } else if (kNotDecorative.count(op)) {
+      if (int mcid = innermost(); mcid >= 0) decorative[mcid] = false;
+    }
+    flush();
+    writeToken(token);
+  }
+
+  void handleEOF() override { flush(); }
+
+  std::map<int, bool> decorative;  // MCID -> paints only shapes
+
+ private:
+  int innermost() const {
+    for (auto it = stack_.rbegin(); it != stack_.rend(); ++it) {
+      if (*it >= 0) return *it;
+    }
+    return -1;
+  }
+
+  // The MCID of the BDC being read: from its inline property list, or from the named entry in the
+  // resources' /Properties.
+  int pending_mcid() {
+    std::vector<QPDFTokenizer::Token const*> meaningful;
+    for (auto const& t : pending_) {
+      if (t.getType() != QPDFTokenizer::tt_space && t.getType() != QPDFTokenizer::tt_comment) meaningful.push_back(&t);
+    }
+    for (size_t i = 0; i + 1 < meaningful.size(); ++i) {
+      if (meaningful[i]->getType() == QPDFTokenizer::tt_name && meaningful[i]->getValue() == "/MCID" &&
+          meaningful[i + 1]->getType() == QPDFTokenizer::tt_integer) {
+        // An MCID out of int range names nothing a structure element can hold: not a candidate.
+        char* end = nullptr;
+        long value = std::strtol(meaningful[i + 1]->getValue().c_str(), &end, 10);
+        return *end == '\0' && value >= 0 && value <= INT_MAX ? static_cast<int>(value) : -1;
+      }
+    }
+    if (meaningful.size() == 2 && meaningful[1]->getType() == QPDFTokenizer::tt_name && resources_.isDictionary()) {
+      QPDFObjectHandle properties = resources_.getKey("/Properties");
+      QPDFObjectHandle list = properties.isDictionary() ? properties.getKey(meaningful[1]->getValue())
+                                                         : QPDFObjectHandle::newNull();
+      if (list.isDictionary() && list.getKey("/MCID").isInteger()) return list.getKey("/MCID").getIntValueAsInt();
+    }
+    return -1;
+  }
+
+  void flush() {
+    for (auto const& t : pending_) writeToken(t);
+    pending_.clear();
+  }
+
+  QPDFObjectHandle resources_;
+  std::set<int> targets_;
+  std::vector<QPDFTokenizer::Token> pending_;
+  std::vector<int> stack_;
+};
+
+// Runs the filter over a page or Form XObject; with a pipeline, replaces its content with the output.
+void run_decoration_filter(QPDF& pdf, QPDFObjectHandle owner, DecorationFilter& filter, bool rewrite) {
+  QPDFPageObjectHelper helper(owner);
+  Pl_Buffer buffer("pdfua decorations");
+  helper.filterContents(&filter, rewrite ? &buffer : nullptr);
+  if (!rewrite) return;
+  auto data = buffer.getBufferSharedPointer();
+  if (owner.isStream()) {
+    owner.replaceStreamData(data, QPDFObjectHandle::newNull(), QPDFObjectHandle::newNull());
+  } else {
+    owner.replaceKey("/Contents", QPDFObjectHandle::newStream(&pdf, data));
+  }
+}
+
+}  // namespace
+
+long artifact_tagged_decorations(QPDF& pdf) {
+  QPDFObjectHandle tree = struct_tree(pdf);
+  if (!tree.isDictionary()) return 0;
+  QPDFObjectHandle parent_tree = tree.getKey("/ParentTree");
+  QPDFObjectHandle role_map = tree.getKey("/RoleMap");
+
+  // Content held directly by a grouping element, per content stream that numbers it.
+  struct Candidate {
+    QPDFObjectHandle elem;
+    int mcid;
+  };
+  std::map<QPDFObjGen, QPDFObjectHandle> owners;
+  std::map<QPDFObjGen, std::vector<Candidate>> candidates;
+  each_struct_elem(pdf, [&](QPDFObjectHandle elem) {
+    if (!kGrouping.count(standard_type(elem, role_map))) return;
+    QPDFObjectHandle page = page_of(elem);
+    for (auto& kid : kids_of(elem)) {
+      if (kid.isDictionary() && kid.hasKey("/S")) continue;
+      QPDFObjectHandle mcid = mcid_value(kid);
+      QPDFObjectHandle owner = mcid_owner(kid, page);
+      if (!mcid.isInteger() || mcid.getIntValue() < 0 || !(owner.isStream() || owner.isDictionary())) continue;
+      owners[owner.getObjGen()] = owner;
+      candidates[owner.getObjGen()].push_back({elem, mcid.getIntValueAsInt()});
+    }
+  });
+
+  long changed = 0;
+  for (auto& [og, list] : candidates) {
+    QPDFObjectHandle owner = owners[og];
+    QPDFObjectHandle resources = QPDFPageObjectHelper(owner).getAttribute("/Resources", false);
+    DecorationFilter reader(resources);
+    run_decoration_filter(pdf, owner, reader, false);
+
+    std::set<int> targets;
+    for (auto const& c : list) {
+      auto it = reader.decorative.find(c.mcid);
+      if (it != reader.decorative.end() && it->second) targets.insert(c.mcid);
+    }
+    if (targets.empty()) continue;
+    DecorationFilter writer(resources, targets);
+    run_decoration_filter(pdf, owner, writer, true);
+
+    // The structure no longer refers to the artifacts: off the element's kids, out of the ParentTree.
+    QPDFObjectHandle entries = parent_tree_entries(pdf, parent_tree, owner);
+    for (Candidate c : list) {  // a copy: the handle is modified, and handles share their object
+      if (!targets.count(c.mcid)) continue;
+      QPDFObjectHandle page = page_of(c.elem);
+      std::vector<QPDFObjectHandle> keep;
+      for (auto& kid : kids_of(c.elem)) {
+        bool is_target = !(kid.isDictionary() && kid.hasKey("/S")) && mcid_value(kid).isInteger() &&
+                         mcid_value(kid).getIntValue() == c.mcid && mcid_owner(kid, page).getObjGen() == og;
+        if (!is_target) keep.push_back(kid);
+      }
+      c.elem.replaceKey("/K", QPDFObjectHandle::newArray(keep));
+      if (entries.isArray() && c.mcid < entries.getArrayNItems()) {
+        entries.setArrayItem(c.mcid, QPDFObjectHandle::newNull());
+      }
+      ++changed;
+    }
+  }
+  return changed;
+}
+
 long wrap_list_bodies(QPDF& pdf) {
   QPDFObjectHandle tree = struct_tree(pdf);
   if (!tree.isDictionary()) return 0;
@@ -705,6 +895,7 @@ bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title
 
 Report apply(QPDF& pdf, std::map<std::string, std::string> const& link_texts, std::optional<std::string> const& title) {
   Report report;
+  report.decorations = artifact_tagged_decorations(pdf);
   report.artifacts = mark_untagged_content_as_artifacts(pdf);
   report.links = describe_links(pdf, link_texts);
   report.list_bodies = wrap_list_bodies(pdf);
