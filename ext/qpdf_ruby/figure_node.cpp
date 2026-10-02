@@ -31,7 +31,7 @@ void collect_bounds(QPDFObjectHandle elem, qpdf_ruby::McidBounds const& bounds, 
   QPDFObjectHandle kids = elem.getKey("/K");
   std::vector<QPDFObjectHandle> list;
   if (kids.isArray()) {
-    for (auto const& kid : kids.aitems()) list.push_back(kid);
+    for (auto kid : kids.aitems()) list.push_back(kid);
   } else if (!kids.isNull()) {
     list.push_back(kids);
   }
@@ -65,7 +65,7 @@ void FigureNode::ensureLayoutBBox(PDFStructWalker& walker) {
   QPDFObjectHandle attrs = node.getKey("/A");
   if (is_layout_with_bbox(attrs)) return;
   if (attrs.isArray()) {
-    for (auto const& item : attrs.aitems()) {
+    for (auto item : attrs.aitems()) {
       if (is_layout_with_bbox(item)) return;
     }
   }

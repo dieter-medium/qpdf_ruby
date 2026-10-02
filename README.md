@@ -51,7 +51,7 @@ checkable part only - alternative texts, headings and reading order still need a
 ### Requirements
 
 * **Ruby** \>= 3.3 (tested with 3.3, 3.4 and 4.0)
-* **QPDF** \>= 12.0.0 (headers & libs)
+* **QPDF** \>= 11.9 (headers & libs; tested with 11.9.1 and 12.2)
 
 ### macOS
 ```bash
@@ -64,7 +64,7 @@ bundle config set --local build.qpdf_ruby "--with-qpdf-dir=$(brew --prefix qpdf)
 # Debian 13 (trixie) and newer ship QPDF 12
 sudo apt-get update && sudo apt-get install -y libqpdf-dev qpdf
 ```
-If `apt` cannot provide QPDF ≥ 12, compile it yourself or use Debian trixie (see the
+If `apt` cannot provide QPDF ≥ 11.9, compile it yourself or use Debian trixie (see the
 [Dockerfile](./docker/Dockerfile)).
 
 ### Add the gem

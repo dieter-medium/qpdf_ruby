@@ -32,7 +32,7 @@ bool form_has_marked_content(QPDFObjectHandle xobject, std::set<QPDFObjGen>& see
   QPDFObjectHandle resources = dict.getKey("/Resources");
   QPDFObjectHandle xobjects = resources.isDictionary() ? resources.getKey("/XObject") : QPDFObjectHandle::newNull();
   if (xobjects.isDictionary()) {
-    for (auto const& [name, child] : xobjects.ditems()) {
+    for (auto [name, child] : xobjects.ditems()) {
       if (form_has_marked_content(child, seen)) return true;
     }
   }
@@ -201,7 +201,7 @@ UntaggedCounts filter_contents(QPDF& pdf, QPDFObjectHandle owner, bool rewrite, 
 
   QPDFObjectHandle xobjects = resources.isDictionary() ? resources.getKey("/XObject") : QPDFObjectHandle::newNull();
   if (xobjects.isDictionary()) {
-    for (auto const& [name, xobject] : xobjects.ditems()) {
+    for (auto [name, xobject] : xobjects.ditems()) {
       std::set<QPDFObjGen> seen;
       if (form_has_marked_content(xobject, seen)) add_counts(counts, filter_contents(pdf, xobject, rewrite, visited));
     }
@@ -212,7 +212,7 @@ UntaggedCounts filter_contents(QPDF& pdf, QPDFObjectHandle owner, bool rewrite, 
 UntaggedCounts walk_untagged(QPDF& pdf, bool rewrite) {
   UntaggedCounts counts;
   std::set<QPDFObjGen> visited;
-  for (auto& page : pdf.getAllPages()) add_counts(counts, filter_contents(pdf, page, rewrite, visited));
+  for (QPDFObjectHandle page : pdf.getAllPages()) add_counts(counts, filter_contents(pdf, page, rewrite, visited));
   return counts;
 }
 
@@ -231,7 +231,7 @@ std::vector<QPDFObjectHandle> kids_of(QPDFObjectHandle elem) {
   std::vector<QPDFObjectHandle> kids;
   QPDFObjectHandle k = elem.getKey("/K");
   if (k.isArray()) {
-    for (auto const& kid : k.aitems()) kids.push_back(kid);
+    for (auto kid : k.aitems()) kids.push_back(kid);
   } else if (!k.isNull()) {
     kids.push_back(k);
   }
@@ -309,7 +309,7 @@ long describe_links(QPDF& pdf, std::map<std::string, std::string> const& texts) 
   QPDFObjectHandle parent_tree = tree.isDictionary() ? tree.getKey("/ParentTree") : QPDFObjectHandle::newNull();
   long described = 0;
 
-  for (auto& page : pdf.getAllPages()) {
+  for (QPDFObjectHandle page : pdf.getAllPages()) {
     QPDFObjectHandle annots = page.getKey("/Annots");
     if (!annots.isArray()) continue;
     for (auto annot : annots.aitems()) {
@@ -397,7 +397,7 @@ long wrap_list_bodies(QPDF& pdf) {
           ok = false;
           break;
         }
-        reparent.push_back([&pdf, parent_tree, key, lbody]() {
+        reparent.push_back([&pdf, parent_tree, key, lbody]() mutable {
           QPDFNumberTreeObjectHelper(parent_tree, pdf).insert(key.getIntValue(), lbody);
         });
         continue;

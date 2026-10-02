@@ -179,13 +179,13 @@ Box unite(Box const& a, Box const& b) {
 
 McidBounds find_mcid_bounds(QPDF& pdf) {
   McidBounds bounds;
-  for (auto& page : pdf.getAllPages()) {
+  for (QPDFObjectHandle page : pdf.getAllPages()) {
     QPDFPageObjectHelper helper(page);
     McidBounds on_page;
     BoundsCollector collector(page.getObjGen(), helper.getAttribute("/Resources", false), on_page);
     helper.parseContents(&collector);
 
-    QPDFObjectHandle crop = helper.getCropBox(true);
+    QPDFObjectHandle crop = helper.getCropBox();  // falls back to the MediaBox; never copies
     for (auto& [key, box] : on_page) {
       if (crop.isArray() && crop.getArrayNItems() == 4) {
         box[0] = std::max(box[0], crop.getArrayItem(0).getNumericValue());

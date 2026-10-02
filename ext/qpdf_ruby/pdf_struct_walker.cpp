@@ -28,8 +28,9 @@ void PDFStructWalker::buildPageObjectMap(QPDF& pdf) {
 const std::map<QPDFObjGen, int>& PDFStructWalker::getPageObjectMap() const { return pageObjToNumMap; }
 
 std::array<double, 4> PDFStructWalker::getPageCropBoxFor(QPDFObjectHandle const& page_oh) const {
-  // getCropBox(true) follows inheritance through the page tree and falls back to the MediaBox.
-  QPDFObjectHandle crop = QPDFPageObjectHelper(page_oh).getCropBox(true);
+  // getCropBox() follows inheritance through the page tree and falls back to the MediaBox. Its
+  // arguments would copy an inherited box into the page - a write in what is a read.
+  QPDFObjectHandle crop = QPDFPageObjectHelper(page_oh).getCropBox();
   std::array<double, 4> r = {0, 0, 0, 0};
   if (crop.isArray() && crop.getArrayNItems() == 4) {
     for (int i = 0; i < 4; ++i) r[i] = crop.getArrayItem(i).getNumericValue();

@@ -99,7 +99,7 @@ static VALUE doc_show_structure(VALUE self) {
     walker.buildPageObjectMap(pdf);
     std::string out;
     if (kids.isArray()) {
-      for (auto const& kid : kids.aitems()) out += walker.get_structure_as_string(kid);
+      for (auto kid : kids.aitems()) out += walker.get_structure_as_string(kid);
     } else {
       out = walker.get_structure_as_string(kids);
     }
@@ -115,7 +115,7 @@ static VALUE doc_ensure_bbox(VALUE self) {
     QPDFObjectHandle kids = struct_kids(pdf);
     PDFStructWalker walker(std::cout, find_mcid_bounds(pdf));
     if (kids.isArray()) {
-      for (auto const& kid : kids.aitems()) walker.ensureLayoutBBox(kid);
+      for (auto kid : kids.aitems()) walker.ensureLayoutBBox(kid);
     } else {
       walker.ensureLayoutBBox(kids);
     }
@@ -262,7 +262,7 @@ static VALUE doc_role_map(VALUE self) {
     std::map<std::string, std::string> out;
     QPDFObjectHandle map = h->qpdf().getRoot().getKey("/StructTreeRoot").getKey("/RoleMap");
     if (map.isDictionary()) {
-      for (auto const& [key, value] : map.ditems()) {
+      for (auto [key, value] : map.ditems()) {
         if (value.isName()) out[key.substr(1)] = value.getName().substr(1);
       }
     }
