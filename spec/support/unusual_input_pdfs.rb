@@ -55,4 +55,18 @@ module UnusualInputPdfs
       "42"
     ])
   end
+
+  # A Figure (MCID 0) whose page content is `content`, wrapped in its marked-content sequence;
+  # `resources` is the page's /Resources dictionary.
+  def with_figure_drawing(content, resources: "<< >>")
+    MinimalPdf.build([
+      "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /StructParents 0 /Resources #{resources} " \
+      "/Contents 4 0 R >>",
+      ["<< >>", "/Figure << /MCID 0 >> BDC #{content} EMC\n"],
+      "<< /Type /StructTreeRoot /K [6 0 R] /ParentTree << /Nums [0 [6 0 R]] >> /ParentTreeNextKey 1 >>",
+      "<< /Type /StructElem /S /Figure /P 5 0 R /Pg 3 0 R /Alt (Drawing) /K 0 >>"
+    ])
+  end
 end

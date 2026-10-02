@@ -1,9 +1,11 @@
 #include "mcid_bounds.hpp"
+#include "stroke_bounds.hpp"
 
 #include <qpdf/QPDFObjectHandle.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <set>
@@ -73,13 +75,19 @@ int mcid_of(QPDFObjectHandle properties, QPDFObjectHandle resources) {
 
 constexpr int kMaxFormDepth = 16;
 
+// The parts of the graphics state that decide where paint lands; q/Q save and restore all of it.
+struct GraphicsState {
+  Matrix ctm = kIdentity;
+  paths::StrokeStyle stroke;
+};
+
 class BoundsCollector : public QPDFObjectHandle::ParserCallbacks {
  public:
   // `owner` is the stream the content's MCIDs are numbered in (the page, or a Form XObject);
-  // `ctm` the transformation it is drawn with; `active` the forms being walked (cycle guard).
-  BoundsCollector(QPDFObjGen page, QPDFObjGen owner, QPDFObjectHandle resources, McidBounds& out, Matrix ctm,
-                  std::set<QPDFObjGen>& active, int depth = 0)
-      : page_(page), owner_(owner), resources_(std::move(resources)), out_(out), ctm_(ctm), active_(active),
+  // `state` the graphics state it is drawn with; `active` the forms being walked (cycle guard).
+  BoundsCollector(QPDFObjGen page, QPDFObjGen owner, QPDFObjectHandle resources, McidBounds& out,
+                  GraphicsState state, std::set<QPDFObjGen>& active, int depth = 0)
+      : page_(page), owner_(owner), resources_(std::move(resources)), out_(out), state_(state), active_(active),
         depth_(depth) {}
 
   void handleObject(QPDFObjectHandle obj, size_t, size_t) override {
@@ -90,39 +98,66 @@ class BoundsCollector : public QPDFObjectHandle::ParserCallbacks {
     std::string const op = obj.getOperatorValue();
 
     if (op == "q") {
-      ctm_stack_.push(ctm_);
+      state_stack_.push(state_);
     } else if (op == "Q") {
-      if (!ctm_stack_.empty()) {
-        ctm_ = ctm_stack_.top();
-        ctm_stack_.pop();
+      if (!state_stack_.empty()) {
+        state_ = state_stack_.top();
+        state_stack_.pop();
       }
     } else if (op == "cm") {
       std::vector<QPDFObjectHandle> six(operands_.end() - std::min<size_t>(6, operands_.size()), operands_.end());
-      if (auto m = matrix_of(QPDFObjectHandle::newArray(six))) ctm_ = multiply(*m, ctm_);
+      if (auto m = matrix_of(QPDFObjectHandle::newArray(six))) state_.ctm = multiply(*m, state_.ctm);
+    } else if (op == "w" && number(1)) {
+      state_.stroke.width = *number(1);
+    } else if (op == "J" && number(1)) {
+      state_.stroke.cap = static_cast<int>(*number(1));
+    } else if (op == "j" && number(1)) {
+      state_.stroke.join = static_cast<int>(*number(1));
+    } else if (op == "M" && number(1)) {
+      state_.stroke.miter_limit = *number(1);
+    } else if (op == "gs" && !operands_.empty() && operands_.back().isName()) {
+      apply_ext_gstate(operands_.back().getName());
     } else if (op == "BDC") {
       mcids_.push(operands_.size() >= 2 ? mcid_of(operands_.back(), resources_) : -1);
     } else if (op == "BMC") {
       mcids_.push(-1);
     } else if (op == "EMC") {
       if (!mcids_.empty()) mcids_.pop();
-    } else if (op == "re" && operands_.size() >= 4) {
-      double x = operands_[operands_.size() - 4].getNumericValue();
-      double y = operands_[operands_.size() - 3].getNumericValue();
-      double w = operands_[operands_.size() - 2].getNumericValue();
-      double h = operands_[operands_.size() - 1].getNumericValue();
-      path_.add_box(ctm_, x, y, x + w, y + h);
-    } else if ((op == "m" || op == "l") && operands_.size() >= 2) {
-      add_point(operands_.size() - 2);
-    } else if ((op == "c") && operands_.size() >= 6) {
-      for (size_t i : {6, 4, 2}) add_point(operands_.size() - i);
-    } else if ((op == "v" || op == "y") && operands_.size() >= 4) {
-      for (size_t i : {4, 2}) add_point(operands_.size() - i);
-    } else if (op == "S" || op == "s" || op == "f" || op == "F" || op == "f*" || op == "B" || op == "B*" ||
-               op == "b" || op == "b*") {
-      if (!path_.empty()) record(path_);
-      path_ = Extent();
+    } else if (op == "m" && point(1)) {
+      path_.push_back({*point(1), {}, false});
+      current_ = *point(1);
+    } else if (op == "l" && point(1)) {
+      add_segment(false, current_, current_, *point(1));
+    } else if (op == "c" && point(3)) {
+      add_segment(true, *point(3), *point(2), *point(1));
+    } else if (op == "v" && point(2)) {
+      add_segment(true, current_, *point(2), *point(1));
+    } else if (op == "y" && point(2)) {
+      add_segment(true, *point(2), *point(1), *point(1));
+    } else if (op == "h") {
+      close_subpath();
+    } else if (op == "re" && number(4)) {
+      double x = *number(4), y = *number(3), w = *number(2), h = *number(1);
+      path_.push_back({{x, y}, {}, false});
+      current_ = {x, y};
+      for (paths::Point p : {paths::Point{x + w, y}, paths::Point{x + w, y + h}, paths::Point{x, y + h}}) {
+        add_segment(false, current_, current_, p);
+      }
+      close_subpath();
+    } else if (op == "f" || op == "F" || op == "f*") {
+      paint(true, false);
+    } else if (op == "S") {
+      paint(false, true);
+    } else if (op == "s") {
+      close_subpath();
+      paint(false, true);
+    } else if (op == "B" || op == "B*") {
+      paint(true, true);
+    } else if (op == "b" || op == "b*") {
+      close_subpath();
+      paint(true, true);
     } else if (op == "n") {
-      path_ = Extent();
+      path_.clear();
     } else if (op == "Do" && !operands_.empty() && operands_.back().isName()) {
       draw_xobject(operands_.back().getName());
     }
@@ -132,9 +167,60 @@ class BoundsCollector : public QPDFObjectHandle::ParserCallbacks {
   void handleEOF() override {}
 
  private:
-  void add_point(size_t index) {
-    auto [x, y] = transform(ctm_, operands_[index].getNumericValue(), operands_[index + 1].getNumericValue());
-    path_.add(x, y);
+  // The n-th numeric operand from the end (1 = the last), if there is one.
+  // (A copy of the handle: QPDF 11's accessors are not const.)
+  std::optional<double> number(size_t from_end) const {
+    if (operands_.size() < from_end) return std::nullopt;
+    QPDFObjectHandle operand = operands_[operands_.size() - from_end];
+    if (!operand.isNumber()) return std::nullopt;
+    return operand.getNumericValue();
+  }
+
+  // The n-th coordinate pair from the end (1 = the last two operands).
+  std::optional<paths::Point> point(size_t from_end) const {
+    auto x = number(2 * from_end);
+    auto y = number(2 * from_end - 1);
+    if (!x || !y) return std::nullopt;
+    return paths::Point{*x, *y};
+  }
+
+  // After h, a segment without a new m starts a new subpath at the closed one's start.
+  void add_segment(bool curve, paths::Point p1, paths::Point p2, paths::Point p3) {
+    if (path_.empty()) return;  // no current point
+    if (path_.back().closed) path_.push_back({current_, {}, false});
+    path_.back().segments.push_back({curve, {current_, p1, p2, p3}});
+    current_ = p3;
+  }
+
+  void close_subpath() {
+    if (path_.empty() || path_.back().closed) return;
+    paths::Subpath& subpath = path_.back();
+    paths::Point start = subpath.start;
+    if (std::hypot(current_.x - start.x, current_.y - start.y) > 1e-9) add_segment(false, current_, current_, start);
+    path_.back().closed = true;
+    current_ = start;
+  }
+
+  void paint(bool fill, bool stroke) {
+    std::optional<Box> box;
+    auto unite_with = [&](std::optional<Box> const& more) {
+      if (more) box = box ? unite(*box, *more) : *more;
+    };
+    if (fill) unite_with(paths::fill_bounds(path_, state_.ctm));
+    if (stroke) unite_with(paths::stroke_bounds(path_, state_.ctm, state_.stroke));
+    if (box) record(*box);
+    path_.clear();
+  }
+
+  // Line width, cap, join and miter limit set through an ExtGState (/LW /LC /LJ /ML).
+  void apply_ext_gstate(std::string const& name) {
+    QPDFObjectHandle states = resources_.isDictionary() ? resources_.getKey("/ExtGState") : QPDFObjectHandle::newNull();
+    QPDFObjectHandle gs = states.isDictionary() ? states.getKey(name) : QPDFObjectHandle::newNull();
+    if (!gs.isDictionary()) return;
+    if (gs.getKey("/LW").isNumber()) state_.stroke.width = gs.getKey("/LW").getNumericValue();
+    if (gs.getKey("/LC").isInteger()) state_.stroke.cap = gs.getKey("/LC").getIntValueAsInt();
+    if (gs.getKey("/LJ").isInteger()) state_.stroke.join = gs.getKey("/LJ").getIntValueAsInt();
+    if (gs.getKey("/ML").isNumber()) state_.stroke.miter_limit = gs.getKey("/ML").getNumericValue();
   }
 
   void draw_xobject(std::string const& name) {
@@ -144,29 +230,32 @@ class BoundsCollector : public QPDFObjectHandle::ParserCallbacks {
     QPDFObjectHandle dict = xobject.getDict();
     Extent extent;
     if (dict.getKey("/Subtype").isNameAndEquals("/Image")) {
-      extent.add_box(ctm_, 0, 0, 1, 1);  // an image fills the unit square
+      extent.add_box(state_.ctm, 0, 0, 1, 1);  // an image fills the unit square
     } else if (dict.getKey("/Subtype").isNameAndEquals("/Form")) {
       QPDFObjectHandle bbox = dict.getKey("/BBox");
       if (!bbox.isArray() || bbox.getArrayNItems() != 4) return;
-      Matrix m = multiply(matrix_of(dict.getKey("/Matrix")).value_or(kIdentity), ctm_);
+      Matrix m = multiply(matrix_of(dict.getKey("/Matrix")).value_or(kIdentity), state_.ctm);
       extent.add_box(m, bbox.getArrayItem(0).getNumericValue(), bbox.getArrayItem(1).getNumericValue(),
                      bbox.getArrayItem(2).getNumericValue(), bbox.getArrayItem(3).getNumericValue());
       walk_form(xobject, m);
     }
-    if (!extent.empty()) record(extent);
+    if (!extent.empty()) record(extent.box());
   }
 
-  // The form's own MCIDs, keyed by the form; its resources default to the ones it is drawn with.
+  // The form's own MCIDs, keyed by the form; it starts from the graphics state it is drawn with,
+  // and its resources default to the ones it is drawn with.
   void walk_form(QPDFObjectHandle form, Matrix const& m) {
     if (depth_ >= kMaxFormDepth || !active_.insert(form.getObjGen()).second) return;
     QPDFObjectHandle resources = form.getDict().getKey("/Resources");
-    BoundsCollector inner(page_, form.getObjGen(), resources.isDictionary() ? resources : resources_, out_, m,
-                          active_, depth_ + 1);
+    GraphicsState inner_state = state_;
+    inner_state.ctm = m;
+    BoundsCollector inner(page_, form.getObjGen(), resources.isDictionary() ? resources : resources_, out_,
+                          inner_state, active_, depth_ + 1);
     form.parseAsContents(&inner);
     active_.erase(form.getObjGen());
   }
 
-  void record(Extent const& extent) {
+  void record(Box const& box) {
     int mcid = -1;
     std::stack<int> copy = mcids_;
     while (!copy.empty() && mcid < 0) {
@@ -176,7 +265,7 @@ class BoundsCollector : public QPDFObjectHandle::ParserCallbacks {
     if (mcid < 0) return;
     McidKey key{page_, owner_, mcid};
     auto it = out_.find(key);
-    out_[key] = it == out_.end() ? extent.box() : unite(it->second, extent.box());
+    out_[key] = it == out_.end() ? box : unite(it->second, box);
   }
 
   QPDFObjGen page_;
@@ -184,12 +273,13 @@ class BoundsCollector : public QPDFObjectHandle::ParserCallbacks {
   QPDFObjectHandle resources_;
   McidBounds& out_;
   std::vector<QPDFObjectHandle> operands_;
-  Matrix ctm_;
+  GraphicsState state_;
   std::set<QPDFObjGen>& active_;
   int depth_;
-  std::stack<Matrix> ctm_stack_;
+  std::stack<GraphicsState> state_stack_;
   std::stack<int> mcids_;
-  Extent path_;
+  std::vector<paths::Subpath> path_;
+  paths::Point current_;
 };
 
 }  // namespace
@@ -205,7 +295,7 @@ McidBounds find_mcid_bounds(QPDF& pdf) {
     McidBounds on_page;
     std::set<QPDFObjGen> active;
     BoundsCollector collector(page.getObjGen(), page.getObjGen(), helper.getAttribute("/Resources", false), on_page,
-                              kIdentity, active);
+                              GraphicsState{}, active);
     helper.parseContents(&collector);
 
     QPDFObjectHandle crop = helper.getCropBox();  // falls back to the MediaBox; never copies
