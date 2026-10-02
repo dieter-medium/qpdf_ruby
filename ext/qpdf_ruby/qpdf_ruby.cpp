@@ -124,8 +124,8 @@ static VALUE doc_from_memory(int argc, VALUE* argv, VALUE klass) {
 }
 
 static VALUE doc_write(VALUE self, VALUE out_filename) {
-  DocumentHandle* h = handle_of(self);
   checked_string(out_filename);
+  DocumentHandle* h = handle_of(self);
   guarded([&] { h->write(cpp_string(out_filename)); });
   RB_GC_GUARD(out_filename);
   return Qnil;
@@ -213,8 +213,8 @@ static VALUE doc_untagged_content(VALUE self) {
 static VALUE doc_describe_links(int argc, VALUE* argv, VALUE self) {
   VALUE texts = Qnil;
   rb_scan_args(argc, argv, "01", &texts);
-  DocumentHandle* h = handle_of(self);
   VALUE pairs = checked_link_texts(texts);
+  DocumentHandle* h = handle_of(self);
   long described = guarded([&] { return pdfua::describe_links(h->qpdf(), cpp_link_texts(pairs)); });
   RB_GC_GUARD(pairs);
   return LONG2NUM(described);
@@ -326,8 +326,8 @@ static VALUE kwarg(VALUE kwargs, char const* name) {
 static VALUE doc_add_pdfua_identification(int argc, VALUE* argv, VALUE self) {
   VALUE kwargs = Qnil;
   rb_scan_args(argc, argv, ":", &kwargs);
-  DocumentHandle* h = handle_of(self);
   VALUE title = checked_optional_string(kwarg(kwargs, "title"));
+  DocumentHandle* h = handle_of(self);
   bool changed = guarded([&] { return pdfua::add_pdfua_identification(h->qpdf(), cpp_optional_string(title)); });
   RB_GC_GUARD(title);
   return changed ? Qtrue : Qfalse;
@@ -338,9 +338,9 @@ static VALUE report_hash(pdfua::Report const& report);
 static VALUE doc_apply_pdfua_fixes(int argc, VALUE* argv, VALUE self) {
   VALUE kwargs = Qnil;
   rb_scan_args(argc, argv, ":", &kwargs);
-  DocumentHandle* h = handle_of(self);
   VALUE pairs = checked_link_texts(kwarg(kwargs, "link_texts"));
   VALUE title = checked_optional_string(kwarg(kwargs, "title"));
+  DocumentHandle* h = handle_of(self);
 
   VALUE out = guarded_to_ruby([&] { return pdfua::apply(h->qpdf(), cpp_link_texts(pairs), cpp_optional_string(title)); },
                               report_hash);
