@@ -14,7 +14,7 @@ gem closes them without touching the content that is tagged:
 | 7.2-20 list items | `LI` holds `Lbl` and the content directly, never `LBody` | moves the content into an `LBody`, ParentTree entries updated (a Form XObject's MCIDs in its own entry) | `doc.wrap_list_bodies` |
 | 7.1-5 non-standard types | PDF 2.0 types (`Strong`, `Em`, `Aside`, …) without a RoleMap | maps them to PDF 1.7 types in the RoleMap (table below) | `doc.map_nonstandard_roles` |
 | 7.3-1 figure alternative | an HTML `<figure>` becomes a `Figure` without alt text around the image's own `Figure` | retags that grouping `Figure` as `Div` | `doc.retag_grouping_figures` |
-| 7.1-8 metadata | no XMP `pdfuaid` identification | adds `pdfuaid:part 1` and `dc:title`, each only if missing (extends existing XMP, never replaces a title), sets `DisplayDocTitle` and `Marked` - the identification only for a file with a structure tree | `doc.add_pdfua_identification(title: nil)` |
+| 7.1-8 metadata | no XMP `pdfuaid` identification | adds `pdfuaid:part 1` and `dc:title`, each only if missing (read namespace-aware - a commented-out one does not count, an empty one does; extends existing XMP, never replaces a title), sets `DisplayDocTitle` and `Marked` - the identification only for a file with a structure tree | `doc.add_pdfua_identification(title: nil)` |
 
 `doc.apply_pdfua_fixes(link_texts: {}, title: nil)` runs all of them and returns a report.
 Each step only adds what is missing, so running it twice changes nothing (the report's
@@ -53,7 +53,8 @@ Also:
 _¹The gem parses each page's content stream, and the content of the Form XObjects it draws, under
 the full transformation matrix and unites what each piece of marked content paints - images, Form
 XObjects, paths - per page, content stream and MCID (a marked-content reference's `/Stm` names the
-form whose MCIDs it means). Text adds nothing (its extent needs font metrics), and content outside
+form whose MCIDs it means). A stroked path counts with its line width, caps and joins (from `w`, `J`,
+`j`, `M` or an ExtGState); a curve's stroke is bounded a little generously. Text adds nothing (its extent needs font metrics), and content outside
 the crop box is ignored; a Figure with no other content gets the crop box._
 
 `#mark_paths_as_artifacts` is deprecated: it now does what `#mark_untagged_content_as_artifacts`
@@ -126,10 +127,13 @@ autotest         # guard & RSpec
 ```
 * Bump **version.rb** → `bundle exec rake release` to push a new gem. It first runs
   `rake release_credentials_check`, which shows where the push credential comes from: a set
-  `GEM_HOST_API_KEY` wins (as in RubyGems), else `gem.push_key` in the credentials file RubyGems uses.
+  `GEM_HOST_API_KEY` wins (as in RubyGems), else `gem.push_key` in the credentials file RubyGems uses,
+  else that file's key for the push host, else its `rubygems_api_key`.
 * `bundle exec rspec` runs the specs; the veraPDF examples run only where `verapdf` is on the
   `PATH` (`bin/install-verapdf.sh [DIR]` installs the pinned CLI; needs Java). They are skipped
   otherwise - `REQUIRE_VERAPDF=1`, set in CI, makes them fail instead.
+* `bin/asan-rspec.sh [RSPEC_ARGS]` builds the extension with AddressSanitizer in a scratch copy and
+  runs the specs under it - the only way to see a use-after-free that a plain run survives by luck.
 
 ### Testing with local QPDF builds
 If you tinker with QPDF itself, point Bundler to your custom prefix:

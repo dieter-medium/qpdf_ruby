@@ -10,6 +10,7 @@ require "yaml"
 module ReleaseCredentialsCheck
   BUNDLE_CONFIG_PATH = ".bundle/config"
   ENV_TOKEN = "GEM_HOST_API_KEY"
+  GEMSPEC_PATH = File.expand_path("../qpdf_ruby.gemspec", __dir__)
 
   module_function
 
@@ -39,6 +40,26 @@ module ReleaseCredentialsCheck
     Gem.configuration.load_file(path).keys.map(&:to_s)
   end
 
+  # The host `gem push` sends to, decided as Gem::Commands::PushCommand does: the gemspec's
+  # allowed_push_host (Bundler passes it as --host too), else RUBYGEMS_HOST, else Gem.host.
+  def push_host(env = ENV, allowed: allowed_push_host)
+    rubygems_host = env["RUBYGEMS_HOST"].to_s
+    allowed || (rubygems_host.empty? ? nil : rubygems_host) || Gem.host
+  end
+
+  def allowed_push_host
+    Gem::Specification.load(GEMSPEC_PATH)&.metadata&.[]("allowed_push_host")
+  end
+
+  # The credentials file key RubyGems pushes with when no token is in the environment: the
+  # configured gem.push_key, else a key named after the push host, else :rubygems_api_key.
+  def file_key_in_use(key, keys, host)
+    return key if key
+    return host if keys.include?(host)
+
+    "rubygems_api_key" if keys.include?("rubygems_api_key")
+  end
+
   # RubyGems uses GEM_HOST_API_KEY whenever it is set - even when empty - ahead of every key below.
   def env_token?(env = ENV)
     env.key?(ENV_TOKEN)
@@ -47,22 +68,36 @@ module ReleaseCredentialsCheck
   # Always printed first, in one stream (puts only - mixing in `warn`'s stderr made lines print out
   # of order once a terminal merges the two streams), so the context stays visible above whichever
   # message stops the release.
-  def print_banner(key, keys, env: ENV, path: credentials_path)
-    ignored = env_token?(env) ? " - ignored, #{ENV_TOKEN} wins" : ""
+  def print_banner(key, keys, env: ENV, path: credentials_path, host: push_host(env))
     puts "=== rubygems.org push credentials ==="
-    puts "  token RubyGems will push with:  #{ENV_TOKEN} (environment)" unless ignored.empty?
-    puts "  gem.push_key Bundler will use: #{key ? "#{key}#{ignored}" : "(not set)"}"
+    puts "  push host:                     #{host}"
+    credential_lines(key, keys, env, host).each { |line| puts line }
     puts "  Bundler app config dir:        #{Bundler.app_config_path}#{" (from BUNDLE_APP_CONFIG)" if ENV["BUNDLE_APP_CONFIG"]}"
-    puts "  credentials file:              #{path}#{ignored}"
+    puts "  credentials file:              #{path}#{ignored_note(env)}"
     puts "  credentials keys:              #{keys.empty? ? "(none found)" : keys.join(", ")}"
     puts "======================================"
   end
 
+  def ignored_note(env)
+    env_token?(env) ? " - ignored, #{ENV_TOKEN} wins" : ""
+  end
+
+  # Which credential is in use: the environment token, or the key RubyGems picks from the file.
+  def credential_lines(key, keys, env, host)
+    if env_token?(env)
+      return ["  token RubyGems will push with:  #{ENV_TOKEN} (environment)",
+              "  gem.push_key Bundler will use: #{key ? "#{key}#{ignored_note(env)}" : "(not set)"}"]
+    end
+
+    ["  gem.push_key Bundler will use: #{key || "(not set)"}",
+     "  credentials key in use:        #{file_key_in_use(key, keys, host) || "(none)"}"]
+  end
+
   # @return [String, nil] why the release must not go on, or nil when it may
-  def problem(key, keys, env: ENV, path: credentials_path)
+  def problem(key, keys, env: ENV, path: credentials_path, host: push_host(env))
     return env_token_problem(env) if env_token?(env)
 
-    ignored_config_problem(key) || credentials_problem(key, keys, path)
+    ignored_config_problem(key) || credentials_problem(key, keys, path, host)
   end
 
   # A set token is what RubyGems pushes with, so the file and gem.push_key do not matter - but an
@@ -82,12 +117,13 @@ module ReleaseCredentialsCheck
       "Set BUNDLE_GEM__PUSH_KEY=#{wanted} in the environment, or unset BUNDLE_APP_CONFIG."
   end
 
-  def credentials_problem(key, keys, path)
+  def credentials_problem(key, keys, path, host)
     return "#{path} has no keys at all (missing, empty, or not mounted)." if keys.empty?
     return "configured key '#{key}' is not among #{path}'s keys #{keys.inspect}." if key && !keys.include?(key)
-    return if key || keys.include?("rubygems_api_key")
+    return if file_key_in_use(key, keys, host)
 
-    "no gem.push_key configured and #{path} has no default 'rubygems_api_key' key (found: #{keys.inspect})."
+    "no gem.push_key configured, and #{path} has neither a key for #{host} nor a default 'rubygems_api_key' " \
+      "(found: #{keys.inspect})."
   end
 end
 
