@@ -813,6 +813,17 @@ namespace {
 
 constexpr char kRdfNs[] = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 
+// A new XMP packet holding `description` as the catalog's metadata stream.
+void add_packet(QPDF& pdf, std::string const& description) {
+  std::string xmp = "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
+                    "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"" +
+                    std::string(kRdfNs) + "\">\n" + description + "</rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
+  QPDFObjectHandle stream = QPDFObjectHandle::newStream(&pdf, xmp);
+  stream.getDict().replaceKey("/Type", QPDFObjectHandle::newName("/Metadata"));
+  stream.getDict().replaceKey("/Subtype", QPDFObjectHandle::newName("/XML"));
+  pdf.getRoot().replaceKey("/Metadata", stream);
+}
+
 // The identification step, with the reason when the file could not be identified.
 bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<std::string>& unidentified) {
   QPDFObjectHandle root = pdf.getRoot();
@@ -875,14 +886,7 @@ bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<
     return true;
   }
 
-  std::string xmp = "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
-                    "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"" +
-                    std::string(kRdfNs) + "\">\n" + description(true, !doc_title.empty()) +
-                    "</rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
-  QPDFObjectHandle stream = QPDFObjectHandle::newStream(&pdf, xmp);
-  stream.getDict().replaceKey("/Type", QPDFObjectHandle::newName("/Metadata"));
-  stream.getDict().replaceKey("/Subtype", QPDFObjectHandle::newName("/XML"));
-  root.replaceKey("/Metadata", stream);
+  add_packet(pdf, description(true, !doc_title.empty()));
   return true;
 }
 
@@ -891,6 +895,70 @@ bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title) {
   std::optional<std::string> unidentified;
   return identify(pdf, title, unidentified);
+}
+
+namespace {
+
+constexpr char kXmpNs[] = "http://ns.adobe.com/xap/1.0/";
+constexpr char kPdfNs[] = "http://ns.adobe.com/pdf/1.3/";
+
+// Sets the information dictionary's `key` unless it already holds `value`; true if it changed.
+bool set_info(QPDF& pdf, std::string const& key, std::string const& value) {
+  QPDFObjectHandle info = pdf.getTrailer().getKey("/Info");
+  if (!info.isDictionary()) {
+    info = pdf.makeIndirectObject(QPDFObjectHandle::newDictionary());
+    pdf.getTrailer().replaceKey("/Info", info);
+  }
+  QPDFObjectHandle current = info.getKey(key);
+  if (current.isString() && current.getUTF8Value() == value) return false;
+  info.replaceKey(key, QPDFObjectHandle::newUnicodeString(value));
+  return true;
+}
+
+}  // namespace
+
+DocumentInfoResult set_document_info(QPDF& pdf, std::optional<std::string> const& creator,
+                                     std::optional<std::string> const& producer) {
+  DocumentInfoResult result;
+  bool with_creator = creator && !creator->empty();
+  bool with_producer = producer && !producer->empty();
+  if (with_creator) result.changed = set_info(pdf, "/Creator", *creator) || result.changed;
+  if (with_producer) result.changed = set_info(pdf, "/Producer", *producer) || result.changed;
+
+  auto description = [&](bool tool, bool prod) {
+    return std::string("<rdf:Description xmlns:rdf=\"") + kRdfNs + "\" rdf:about=\"\"" +
+           (tool ? std::string(" xmlns:xmp=\"") + kXmpNs + "\"" : "") +
+           (prod ? std::string(" xmlns:pdf=\"") + kPdfNs + "\"" : "") + ">" +
+           (tool ? "<xmp:CreatorTool>" + xml_escape(*creator) + "</xmp:CreatorTool>" : "") +
+           (prod ? "<pdf:Producer>" + xml_escape(*producer) + "</pdf:Producer>" : "") + "</rdf:Description>\n";
+  };
+
+  QPDFObjectHandle metadata = pdf.getRoot().getKey("/Metadata");
+  if (!metadata.isStream()) {
+    if (with_creator || with_producer) {
+      add_packet(pdf, description(with_creator, with_producer));
+      result.changed = true;
+    }
+    return result;
+  }
+
+  auto data = metadata.getStreamData(qpdf_dl_generalized);
+  std::string xmp(reinterpret_cast<char const*>(data->getBuffer()), data->getSize());
+  xmp::Scan packet = xmp::scan(xmp);
+  if (!packet.well_formed || packet.rdf_close == std::string::npos) {
+    if (with_creator) result.xmp_kept.push_back("xmp:CreatorTool");
+    if (with_producer) result.xmp_kept.push_back("pdf:Producer");
+    return result;
+  }
+  bool add_tool = with_creator && !packet.has(kXmpNs, "CreatorTool");
+  bool add_producer = with_producer && !packet.has(kPdfNs, "Producer");
+  if (with_creator && !add_tool) result.xmp_kept.push_back("xmp:CreatorTool");
+  if (with_producer && !add_producer) result.xmp_kept.push_back("pdf:Producer");
+  if (!add_tool && !add_producer) return result;
+  xmp.insert(packet.rdf_close, description(add_tool, add_producer));
+  metadata.replaceStreamData(xmp, QPDFObjectHandle::newNull(), QPDFObjectHandle::newNull());
+  result.changed = true;
+  return result;
 }
 
 Report apply(QPDF& pdf, std::map<std::string, std::string> const& link_texts, std::optional<std::string> const& title) {

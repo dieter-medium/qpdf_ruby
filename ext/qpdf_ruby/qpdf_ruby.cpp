@@ -302,6 +302,27 @@ static VALUE doc_metadata(VALUE self) {
       [](std::optional<std::string> const& xmp) { return xmp ? ruby_string(*xmp) : Qnil; });
 }
 
+// The information dictionary's string entries as {"Creator" => "...", ...}; empty without one.
+static VALUE doc_document_info(VALUE self) {
+  DocumentHandle* h = handle_of(self);
+  return guarded_to_ruby(
+      [&] {
+        std::map<std::string, std::string> out;
+        QPDFObjectHandle info = h->qpdf().getTrailer().getKey("/Info");
+        if (info.isDictionary()) {
+          for (auto [key, value] : info.ditems()) {
+            if (value.isString()) out[key.substr(1)] = value.getUTF8Value();
+          }
+        }
+        return out;
+      },
+      [](std::map<std::string, std::string> const& entries) {
+        VALUE hash = rb_hash_new();
+        for (auto const& [key, value] : entries) rb_hash_aset(hash, ruby_string(key), ruby_string(value));
+        return hash;
+      });
+}
+
 // The structure tree's RoleMap as {"Aside" => "Sect", ...}.
 static VALUE doc_role_map(VALUE self) {
   DocumentHandle* h = handle_of(self);
@@ -339,6 +360,31 @@ static VALUE doc_add_pdfua_identification(int argc, VALUE* argv, VALUE self) {
   bool changed = guarded([&] { return pdfua::add_pdfua_identification(h->qpdf(), cpp_optional_string(title)); });
   RB_GC_GUARD(title);
   return changed ? Qtrue : Qfalse;
+}
+
+static VALUE doc_set_document_info(int argc, VALUE* argv, VALUE self) {
+  VALUE kwargs = Qnil;
+  rb_scan_args(argc, argv, ":", &kwargs);
+  ID keys[2] = {rb_intern("creator"), rb_intern("producer")};
+  VALUE values[2];
+  rb_get_kwargs(kwargs, keys, 0, 2, values);
+  VALUE creator = checked_optional_string(given(values[0]));
+  VALUE producer = checked_optional_string(given(values[1]));
+  DocumentHandle* h = handle_of(self);
+
+  VALUE out = guarded_to_ruby(
+      [&] { return pdfua::set_document_info(h->qpdf(), cpp_optional_string(creator), cpp_optional_string(producer)); },
+      [](pdfua::DocumentInfoResult const& result) {
+        VALUE kept = rb_ary_new();
+        for (auto const& name : result.xmp_kept) rb_ary_push(kept, ruby_string(name));
+        VALUE hash = rb_hash_new();
+        rb_hash_aset(hash, ID2SYM(rb_intern("changed")), result.changed ? Qtrue : Qfalse);
+        rb_hash_aset(hash, ID2SYM(rb_intern("xmp_kept")), kept);
+        return hash;
+      });
+  RB_GC_GUARD(creator);
+  RB_GC_GUARD(producer);
+  return out;
 }
 
 static VALUE report_hash(pdfua::Report const& report);
@@ -436,9 +482,11 @@ RUBY_FUNC_EXPORTED void Init_qpdf_ruby(void) {
   rb_define_method(rb_cDocument, "figures_without_alt", RUBY_METHOD_FUNC(doc_figures_without_alt), 0);
   rb_define_method(rb_cDocument, "add_pdfua_identification", RUBY_METHOD_FUNC(doc_add_pdfua_identification), -1);
   rb_define_method(rb_cDocument, "apply_pdfua_fixes", RUBY_METHOD_FUNC(doc_apply_pdfua_fixes), -1);
+  rb_define_method(rb_cDocument, "set_document_info", RUBY_METHOD_FUNC(doc_set_document_info), -1);
 
   rb_define_method(rb_cDocument, "links", RUBY_METHOD_FUNC(doc_links), 0);
   rb_define_method(rb_cDocument, "metadata", RUBY_METHOD_FUNC(doc_metadata), 0);
+  rb_define_method(rb_cDocument, "document_info", RUBY_METHOD_FUNC(doc_document_info), 0);
   rb_define_method(rb_cDocument, "role_map", RUBY_METHOD_FUNC(doc_role_map), 0);
 
   rb_define_method(rb_cDocument, "encrypt", RUBY_METHOD_FUNC(doc_encrypt), -1);

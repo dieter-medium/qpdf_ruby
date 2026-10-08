@@ -46,7 +46,8 @@ Also:
 | Count untagged content (dry run, per kind) | `doc.untagged_content` |
 | Add a layout `/BBox` to every `/Figure`¹, and `/Placement /Block` to one outside a line of text (PAC 2024 warns of a "possibly inappropriate use" of a Figure without it) | `doc.ensure_bbox` |
 | Dump the structure tree as XML | `doc.show_structure` |
-| Inspect links, XMP, RoleMap | `doc.links`, `doc.metadata`, `doc.role_map` |
+| Set who made the file: Info `/Creator` and `/Producer`, XMP `xmp:CreatorTool` and `pdf:Producer` (only where the packet has none; kept ones are listed in `xmp_kept`) | `doc.set_document_info(creator:, producer:)` |
+| Inspect links, XMP, RoleMap, the information dictionary | `doc.links`, `doc.metadata`, `doc.role_map`, `doc.document_info` |
 | Count ParentTree entries that do not name their content's structure element (0 = consistent) | `doc.parent_tree_mismatches` |
 | Encrypt | `doc.encrypt(user_pw:, owner_pw:, …)` |
 | Read/write files or memory | `Document.new(path, password = nil)`, `Document.from_memory(bytes, password = nil)`, `#write(path)`, `#to_memory` |

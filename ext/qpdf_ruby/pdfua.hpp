@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 // Fixes for the PDF/UA-1 gaps of Chromium's tagged PDF (print-to-PDF with generateTaggedPDF): it
 // writes no /Artifact sections, no LBody, no link descriptions, no XMP identification, and uses
@@ -83,6 +84,20 @@ long count_figures_without_alt(QPDF& pdf);
 // well-formed XML with an rdf:RDF element is left alone - apply() reports both as
 // unidentified_reason. Returns true if anything changed.
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title);
+
+// Who made the file: the information dictionary's /Creator and /Producer, and XMP
+// xmp:CreatorTool and pdf:Producer (the XMP twins PDF/A expects to match). A value that is not
+// given, or empty, is left alone. The information dictionary is always set; XMP gets a property
+// only where the packet has none - an existing one is kept and named in xmp_kept, as is every
+// given property when the packet is not well-formed XML with an rdf:RDF element. Without a packet
+// a new one is written.
+struct DocumentInfoResult {
+  bool changed = false;
+  std::vector<std::string> xmp_kept;
+};
+
+DocumentInfoResult set_document_info(QPDF& pdf, std::optional<std::string> const& creator,
+                                     std::optional<std::string> const& producer);
 
 struct Report {
   long decorations = 0;
