@@ -9,7 +9,7 @@ RSpec.describe "PDF/UA fixes on unusual input" do
   def xmp_values(doc, xpath)
     xmp = Nokogiri::XML(doc.metadata.sub(/\A<\?xpacket[^>]*\?>/, ""), &:strict)
     xmp.xpath(xpath, "dc" => "http://purl.org/dc/elements/1.1/", "pdfuaid" => "http://www.aiim.org/pdfua/ns/id/",
-                     "rdf" => "http://www.w3.org/1999/02/22-rdf-syntax-ns#").map(&:text)
+                     "rdf" => "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "x" => "adobe:ns:meta/").map(&:text)
   end
 
   context "with XMP that binds the RDF namespace to another prefix" do
@@ -25,6 +25,17 @@ RSpec.describe "PDF/UA fixes on unusual input" do
       doc.add_pdfua_identification(title: "A")
 
       expect(xmp_values(reopened(doc), "//dc:title/rdf:Alt/rdf:li")).to eq(["A"])
+    end
+  end
+
+  context "with a dc:title nested inside another property, not on the document's Description" do
+    let(:nested) { "<xmp:Note xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"><dc:title xmlns:dc=\"http://purl.org/dc/elements/1.1/\">x</dc:title></xmp:Note>" }
+    let(:doc) { open_pdf(EdgeCasePdfs.with_xmp(EdgeCasePdfs.xmp_packet(nested))) }
+
+    it "adds the document's own title" do
+      doc.add_pdfua_identification(title: "A")
+
+      expect(xmp_values(reopened(doc), "/x:xmpmeta/rdf:RDF/rdf:Description/dc:title/rdf:Alt/rdf:li")).to eq(["A"])
     end
   end
 

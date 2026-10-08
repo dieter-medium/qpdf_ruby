@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 // Fixes for the PDF/UA-1 gaps of Chromium's tagged PDF (print-to-PDF with generateTaggedPDF): it
 // writes no /Artifact sections, no LBody, no link descriptions, no XMP identification, and uses
@@ -83,6 +84,21 @@ long count_figures_without_alt(QPDF& pdf);
 // well-formed XML with an rdf:RDF element is left alone - apply() reports both as
 // unidentified_reason. Returns true if anything changed.
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title);
+
+// Who made the file: the information dictionary's /Creator and /Producer, and their XMP twins
+// xmp:CreatorTool and pdf:Producer, kept in agreement. A value that is not given, or empty, is left
+// alone. The information dictionary is always set. In XMP a property that already holds exactly
+// that value once stays; every other occurrence of it is removed and the value written in a new
+// rdf:Description - a packet that is not well-formed XML with an rdf:RDF element is left alone and
+// xmp_error says so. Without a packet a new one is written. The values must be valid XML text
+// (xmp::valid_text) - the Ruby binding checks that.
+struct DocumentInfoResult {
+  bool changed = false;
+  std::optional<std::string> xmp_error;  // why the XMP packet was not updated, if it was not
+};
+
+DocumentInfoResult set_document_info(QPDF& pdf, std::optional<std::string> const& creator,
+                                     std::optional<std::string> const& producer);
 
 struct Report {
   long decorations = 0;

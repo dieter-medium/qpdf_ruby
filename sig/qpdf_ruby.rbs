@@ -33,6 +33,8 @@ module QpdfRuby
       unidentified_reason: String?
     }
 
+    type document_info_result = { changed: bool, xmp_error: String? }
+
     type link = { page: Integer, uri: String?, contents: String? }
 
     def self.from_memory: (String data, ?String? password) -> Document
@@ -58,9 +60,11 @@ module QpdfRuby
     def retag_grouping_figures: () -> Integer
     def figures_without_alt: () -> Integer
     def add_pdfua_identification: (?title: String?) -> bool
+    def set_document_info: (?creator: String?, ?producer: String?) -> document_info_result
 
     def links: () -> Array[link]
     def metadata: () -> String?
+    def document_info: () -> Hash[String, String]
     def role_map: () -> Hash[String, String]
 
     def encrypt: (

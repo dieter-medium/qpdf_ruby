@@ -8,11 +8,13 @@
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFTokenizer.hh>
 
+#include <algorithm>
 #include <climits>
 #include <cstdlib>
 #include <functional>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <vector>
 
 namespace qpdf_ruby::pdfua {
@@ -813,6 +815,17 @@ namespace {
 
 constexpr char kRdfNs[] = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 
+// A new XMP packet holding `description` as the catalog's metadata stream.
+void add_packet(QPDF& pdf, std::string const& description) {
+  std::string xmp = "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
+                    "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"" +
+                    std::string(kRdfNs) + "\">\n" + description + "</rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
+  QPDFObjectHandle stream = QPDFObjectHandle::newStream(&pdf, xmp);
+  stream.getDict().replaceKey("/Type", QPDFObjectHandle::newName("/Metadata"));
+  stream.getDict().replaceKey("/Subtype", QPDFObjectHandle::newName("/XML"));
+  pdf.getRoot().replaceKey("/Metadata", stream);
+}
+
 // The identification step, with the reason when the file could not be identified.
 bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<std::string>& unidentified) {
   QPDFObjectHandle root = pdf.getRoot();
@@ -875,14 +888,7 @@ bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<
     return true;
   }
 
-  std::string xmp = "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
-                    "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"" +
-                    std::string(kRdfNs) + "\">\n" + description(true, !doc_title.empty()) +
-                    "</rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
-  QPDFObjectHandle stream = QPDFObjectHandle::newStream(&pdf, xmp);
-  stream.getDict().replaceKey("/Type", QPDFObjectHandle::newName("/Metadata"));
-  stream.getDict().replaceKey("/Subtype", QPDFObjectHandle::newName("/XML"));
-  root.replaceKey("/Metadata", stream);
+  add_packet(pdf, description(true, !doc_title.empty()));
   return true;
 }
 
@@ -891,6 +897,96 @@ bool identify(QPDF& pdf, std::optional<std::string> const& title, std::optional<
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title) {
   std::optional<std::string> unidentified;
   return identify(pdf, title, unidentified);
+}
+
+namespace {
+
+constexpr char kXmpNs[] = "http://ns.adobe.com/xap/1.0/";
+constexpr char kPdfNs[] = "http://ns.adobe.com/pdf/1.3/";
+
+// Sets the information dictionary's `key` unless it already holds `value`; true if it changed.
+bool set_info(QPDF& pdf, std::string const& key, std::string const& value) {
+  QPDFObjectHandle info = pdf.getTrailer().getKey("/Info");
+  if (!info.isDictionary()) {
+    info = pdf.makeIndirectObject(QPDFObjectHandle::newDictionary());
+    pdf.getTrailer().replaceKey("/Info", info);
+  }
+  QPDFObjectHandle current = info.getKey(key);
+  if (current.isString() && current.getUTF8Value() == value) return false;
+  info.replaceKey(key, QPDFObjectHandle::newUnicodeString(value));
+  return true;
+}
+
+}  // namespace
+
+DocumentInfoResult set_document_info(QPDF& pdf, std::optional<std::string> const& creator,
+                                     std::optional<std::string> const& producer) {
+  DocumentInfoResult result;
+  struct Wanted {
+    char const* ns;
+    char const* local;
+    char const* prefix;
+    std::string value;
+  };
+  std::vector<Wanted> wanted;
+  if (creator && !creator->empty()) {
+    result.changed = set_info(pdf, "/Creator", *creator) || result.changed;
+    wanted.push_back({kXmpNs, "CreatorTool", "xmp", *creator});
+  }
+  if (producer && !producer->empty()) {
+    result.changed = set_info(pdf, "/Producer", *producer) || result.changed;
+    wanted.push_back({kPdfNs, "Producer", "pdf", *producer});
+  }
+  if (wanted.empty()) return result;
+
+  auto description = [&](std::vector<Wanted> const& properties) {
+    std::string out = std::string("<rdf:Description xmlns:rdf=\"") + kRdfNs + "\" rdf:about=\"\"";
+    for (auto const& p : properties) out += std::string(" xmlns:") + p.prefix + "=\"" + p.ns + "\"";
+    out += ">";
+    for (auto const& p : properties) {
+      out += std::string("<") + p.prefix + ":" + p.local + ">" + xml_escape(p.value) + "</" + p.prefix + ":" + p.local + ">";
+    }
+    return out + "</rdf:Description>\n";
+  };
+
+  QPDFObjectHandle metadata = pdf.getRoot().getKey("/Metadata");
+  if (!metadata.isStream()) {
+    add_packet(pdf, description(wanted));
+    result.changed = true;
+    return result;
+  }
+
+  auto data = metadata.getStreamData(qpdf_dl_generalized);
+  std::string xmp(reinterpret_cast<char const*>(data->getBuffer()), data->getSize());
+  xmp::Scan packet = xmp::scan(xmp);
+  if (!packet.well_formed || packet.rdf_close == std::string::npos) {
+    result.xmp_error = "existing XMP metadata is not well-formed XML with an rdf:RDF element";
+    return result;
+  }
+
+  // A property that already says exactly this, once, stays; any other occurrence of it goes, so
+  // the packet and the information dictionary never disagree.
+  std::vector<Wanted> missing;
+  std::vector<std::pair<size_t, size_t>> removals;
+  for (auto const& w : wanted) {
+    std::vector<xmp::Property const*> found;
+    for (auto const& p : packet.located) {
+      if (p.ns == w.ns && p.local == w.local) found.push_back(&p);
+    }
+    if (found.size() == 1 && found[0]->has_value && found[0]->value == w.value) continue;
+    for (auto const* p : found) removals.emplace_back(p->begin, p->end);
+    missing.push_back(w);
+  }
+  if (missing.empty()) return result;
+
+  std::sort(removals.begin(), removals.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
+  for (auto const& [begin, end] : removals) xmp.erase(begin, end - begin);
+  size_t close = xmp::scan(xmp).rdf_close;
+  if (close == std::string::npos) throw std::logic_error("XMP packet lost its rdf:RDF element");
+  xmp.insert(close, description(missing));
+  metadata.replaceStreamData(xmp, QPDFObjectHandle::newNull(), QPDFObjectHandle::newNull());
+  result.changed = true;
+  return result;
 }
 
 Report apply(QPDF& pdf, std::map<std::string, std::string> const& link_texts, std::optional<std::string> const& title) {
