@@ -5,6 +5,7 @@
 #include "pdfua.hpp"
 #include "ruby_guard.hpp"
 #include "struct_node.hpp"
+#include "xmp_scan.hpp"
 
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFObjectHandle.hh>
@@ -49,6 +50,16 @@ static VALUE checked_string(VALUE value) {
 }
 
 static VALUE checked_optional_string(VALUE value) { return NIL_P(value) ? Qnil : checked_string(value); }
+
+// A string that goes into XMP: nil, or UTF-8 made of XML 1.0 characters - a NUL or a control
+// character would make the packet invalid XML.
+static VALUE checked_xmp_string(VALUE value, char const* keyword) {
+  value = checked_optional_string(value);
+  if (!NIL_P(value) && !xmp::valid_text(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)))) {
+    rb_raise(rb_eArgError, "%s must be UTF-8 text without control characters (XML 1.0)", keyword);
+  }
+  return value;
+}
 
 static int collect_link_text(VALUE key, VALUE value, VALUE pairs) {
   rb_ary_push(pairs, rb_assoc_new(rb_obj_as_string(key), rb_obj_as_string(value)));
@@ -355,7 +366,7 @@ static VALUE doc_add_pdfua_identification(int argc, VALUE* argv, VALUE self) {
   ID keys[1] = {rb_intern("title")};
   VALUE values[1];
   rb_get_kwargs(kwargs, keys, 0, 1, values);
-  VALUE title = checked_optional_string(given(values[0]));
+  VALUE title = checked_xmp_string(given(values[0]), "title");
   DocumentHandle* h = handle_of(self);
   bool changed = guarded([&] { return pdfua::add_pdfua_identification(h->qpdf(), cpp_optional_string(title)); });
   RB_GC_GUARD(title);
@@ -368,18 +379,16 @@ static VALUE doc_set_document_info(int argc, VALUE* argv, VALUE self) {
   ID keys[2] = {rb_intern("creator"), rb_intern("producer")};
   VALUE values[2];
   rb_get_kwargs(kwargs, keys, 0, 2, values);
-  VALUE creator = checked_optional_string(given(values[0]));
-  VALUE producer = checked_optional_string(given(values[1]));
+  VALUE creator = checked_xmp_string(given(values[0]), "creator");
+  VALUE producer = checked_xmp_string(given(values[1]), "producer");
   DocumentHandle* h = handle_of(self);
 
   VALUE out = guarded_to_ruby(
       [&] { return pdfua::set_document_info(h->qpdf(), cpp_optional_string(creator), cpp_optional_string(producer)); },
       [](pdfua::DocumentInfoResult const& result) {
-        VALUE kept = rb_ary_new();
-        for (auto const& name : result.xmp_kept) rb_ary_push(kept, ruby_string(name));
         VALUE hash = rb_hash_new();
         rb_hash_aset(hash, ID2SYM(rb_intern("changed")), result.changed ? Qtrue : Qfalse);
-        rb_hash_aset(hash, ID2SYM(rb_intern("xmp_kept")), kept);
+        rb_hash_aset(hash, ID2SYM(rb_intern("xmp_error")), result.xmp_error ? ruby_string(*result.xmp_error) : Qnil);
         return hash;
       });
   RB_GC_GUARD(creator);
@@ -396,7 +405,7 @@ static VALUE doc_apply_pdfua_fixes(int argc, VALUE* argv, VALUE self) {
   VALUE values[2];
   rb_get_kwargs(kwargs, keys, 0, 2, values);
   VALUE pairs = checked_link_texts(given(values[0]));
-  VALUE title = checked_optional_string(given(values[1]));
+  VALUE title = checked_xmp_string(given(values[1]), "title");
   DocumentHandle* h = handle_of(self);
 
   VALUE out = guarded_to_ruby(

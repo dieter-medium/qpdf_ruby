@@ -15,8 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 🚀 Added
 
 - `set_document_info(creator:, producer:)`: the information dictionary's `/Creator` and
-  `/Producer`, and XMP `xmp:CreatorTool` and `pdf:Producer` where the packet has none.
+  `/Producer`, and XMP `xmp:CreatorTool` and `pdf:Producer`, replacing any other value there so the
+  two always agree; `xmp_error` says why a packet that is not well-formed was left alone.
 - `document_info`: the information dictionary's string entries, for inspection.
+
+### 🐛 Fixed
+
+- A `title:` with a NUL, a control character or bytes that are not UTF-8 raises `ArgumentError`
+  instead of writing invalid XMP (`add_pdfua_identification`, `apply_pdfua_fixes`).
+- An XMP property counts only on the document's own `rdf:Description`: a `dc:title` or
+  `pdfuaid:part` nested inside another property no longer suppresses the identification.
 
 ## [0.2.0] - 2026-10-02
 

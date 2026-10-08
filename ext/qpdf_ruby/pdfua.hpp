@@ -85,15 +85,16 @@ long count_figures_without_alt(QPDF& pdf);
 // unidentified_reason. Returns true if anything changed.
 bool add_pdfua_identification(QPDF& pdf, std::optional<std::string> const& title);
 
-// Who made the file: the information dictionary's /Creator and /Producer, and XMP
-// xmp:CreatorTool and pdf:Producer (the XMP twins PDF/A expects to match). A value that is not
-// given, or empty, is left alone. The information dictionary is always set; XMP gets a property
-// only where the packet has none - an existing one is kept and named in xmp_kept, as is every
-// given property when the packet is not well-formed XML with an rdf:RDF element. Without a packet
-// a new one is written.
+// Who made the file: the information dictionary's /Creator and /Producer, and their XMP twins
+// xmp:CreatorTool and pdf:Producer, kept in agreement. A value that is not given, or empty, is left
+// alone. The information dictionary is always set. In XMP a property that already holds exactly
+// that value once stays; every other occurrence of it is removed and the value written in a new
+// rdf:Description - a packet that is not well-formed XML with an rdf:RDF element is left alone and
+// xmp_error says so. Without a packet a new one is written. The values must be valid XML text
+// (xmp::valid_text) - the Ruby binding checks that.
 struct DocumentInfoResult {
   bool changed = false;
-  std::vector<std::string> xmp_kept;
+  std::optional<std::string> xmp_error;  // why the XMP packet was not updated, if it was not
 };
 
 DocumentInfoResult set_document_info(QPDF& pdf, std::optional<std::string> const& creator,

@@ -8,11 +8,13 @@
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFTokenizer.hh>
 
+#include <algorithm>
 #include <climits>
 #include <cstdlib>
 #include <functional>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <vector>
 
 namespace qpdf_ruby::pdfua {
@@ -920,25 +922,37 @@ bool set_info(QPDF& pdf, std::string const& key, std::string const& value) {
 DocumentInfoResult set_document_info(QPDF& pdf, std::optional<std::string> const& creator,
                                      std::optional<std::string> const& producer) {
   DocumentInfoResult result;
-  bool with_creator = creator && !creator->empty();
-  bool with_producer = producer && !producer->empty();
-  if (with_creator) result.changed = set_info(pdf, "/Creator", *creator) || result.changed;
-  if (with_producer) result.changed = set_info(pdf, "/Producer", *producer) || result.changed;
+  struct Wanted {
+    char const* ns;
+    char const* local;
+    char const* prefix;
+    std::string value;
+  };
+  std::vector<Wanted> wanted;
+  if (creator && !creator->empty()) {
+    result.changed = set_info(pdf, "/Creator", *creator) || result.changed;
+    wanted.push_back({kXmpNs, "CreatorTool", "xmp", *creator});
+  }
+  if (producer && !producer->empty()) {
+    result.changed = set_info(pdf, "/Producer", *producer) || result.changed;
+    wanted.push_back({kPdfNs, "Producer", "pdf", *producer});
+  }
+  if (wanted.empty()) return result;
 
-  auto description = [&](bool tool, bool prod) {
-    return std::string("<rdf:Description xmlns:rdf=\"") + kRdfNs + "\" rdf:about=\"\"" +
-           (tool ? std::string(" xmlns:xmp=\"") + kXmpNs + "\"" : "") +
-           (prod ? std::string(" xmlns:pdf=\"") + kPdfNs + "\"" : "") + ">" +
-           (tool ? "<xmp:CreatorTool>" + xml_escape(*creator) + "</xmp:CreatorTool>" : "") +
-           (prod ? "<pdf:Producer>" + xml_escape(*producer) + "</pdf:Producer>" : "") + "</rdf:Description>\n";
+  auto description = [&](std::vector<Wanted> const& properties) {
+    std::string out = std::string("<rdf:Description xmlns:rdf=\"") + kRdfNs + "\" rdf:about=\"\"";
+    for (auto const& p : properties) out += std::string(" xmlns:") + p.prefix + "=\"" + p.ns + "\"";
+    out += ">";
+    for (auto const& p : properties) {
+      out += std::string("<") + p.prefix + ":" + p.local + ">" + xml_escape(p.value) + "</" + p.prefix + ":" + p.local + ">";
+    }
+    return out + "</rdf:Description>\n";
   };
 
   QPDFObjectHandle metadata = pdf.getRoot().getKey("/Metadata");
   if (!metadata.isStream()) {
-    if (with_creator || with_producer) {
-      add_packet(pdf, description(with_creator, with_producer));
-      result.changed = true;
-    }
+    add_packet(pdf, description(wanted));
+    result.changed = true;
     return result;
   }
 
@@ -946,16 +960,30 @@ DocumentInfoResult set_document_info(QPDF& pdf, std::optional<std::string> const
   std::string xmp(reinterpret_cast<char const*>(data->getBuffer()), data->getSize());
   xmp::Scan packet = xmp::scan(xmp);
   if (!packet.well_formed || packet.rdf_close == std::string::npos) {
-    if (with_creator) result.xmp_kept.push_back("xmp:CreatorTool");
-    if (with_producer) result.xmp_kept.push_back("pdf:Producer");
+    result.xmp_error = "existing XMP metadata is not well-formed XML with an rdf:RDF element";
     return result;
   }
-  bool add_tool = with_creator && !packet.has(kXmpNs, "CreatorTool");
-  bool add_producer = with_producer && !packet.has(kPdfNs, "Producer");
-  if (with_creator && !add_tool) result.xmp_kept.push_back("xmp:CreatorTool");
-  if (with_producer && !add_producer) result.xmp_kept.push_back("pdf:Producer");
-  if (!add_tool && !add_producer) return result;
-  xmp.insert(packet.rdf_close, description(add_tool, add_producer));
+
+  // A property that already says exactly this, once, stays; any other occurrence of it goes, so
+  // the packet and the information dictionary never disagree.
+  std::vector<Wanted> missing;
+  std::vector<std::pair<size_t, size_t>> removals;
+  for (auto const& w : wanted) {
+    std::vector<xmp::Property const*> found;
+    for (auto const& p : packet.located) {
+      if (p.ns == w.ns && p.local == w.local) found.push_back(&p);
+    }
+    if (found.size() == 1 && found[0]->has_value && found[0]->value == w.value) continue;
+    for (auto const* p : found) removals.emplace_back(p->begin, p->end);
+    missing.push_back(w);
+  }
+  if (missing.empty()) return result;
+
+  std::sort(removals.begin(), removals.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
+  for (auto const& [begin, end] : removals) xmp.erase(begin, end - begin);
+  size_t close = xmp::scan(xmp).rdf_close;
+  if (close == std::string::npos) throw std::logic_error("XMP packet lost its rdf:RDF element");
+  xmp.insert(close, description(missing));
   metadata.replaceStreamData(xmp, QPDFObjectHandle::newNull(), QPDFObjectHandle::newNull());
   result.changed = true;
   return result;

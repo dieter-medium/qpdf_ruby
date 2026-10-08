@@ -33,7 +33,7 @@ module QpdfRuby
       unidentified_reason: String?
     }
 
-    type document_info_result = { changed: bool, xmp_kept: Array[String] }
+    type document_info_result = { changed: bool, xmp_error: String? }
 
     type link = { page: Integer, uri: String?, contents: String? }
 
